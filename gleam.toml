@@ -1,6 +1,6 @@
 name = "gall"
 version = "0.1.0"
-description = "gall — witnessed AI work. In git. The audacity."
+description = "gall — tamper-proof witnessed agent work. In git. The audacity."
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "systemic-engineering", repo = "gall" }
 

@@ -1,4 +1,4 @@
-/// Gall: witnessed AI work. In git. The audacity.
+/// Gall: tamper-proof witnessed agent work. In git. The audacity.
 ///
 /// gall spawns claude. Not the other way around.
 /// gall provides the infrastructure for observation.
