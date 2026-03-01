@@ -20,10 +20,12 @@
 /// The disk record exists during the session. Not after. During.
 /// That's what makes it witnessing, not logging.
 import fragmentation
+import fragmentation/walk
 import gall/mcp
 import gall/session
 import gall/store
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import simplifile
@@ -78,6 +80,8 @@ pub type RunConfig {
     nickname: String,
     /// The task prompt to pass to claude.
     prompt: String,
+    /// The model identifier (e.g. "claude-sonnet-4-6").
+    model: String,
     /// Root directory for .gall/ storage. Usually the project working dir.
     work_dir: String,
     /// Path to the claude binary.
@@ -147,8 +151,9 @@ pub fn run(config: RunConfig) -> Nil {
           // TODO: git commit to .mara/gestalt
         }
         Error(reason) -> {
-          // Tamper detected — write a @violation Fragment to the store
-          let violation = violation_shard(reason)
+          // Tamper detected — build the full violation record and write to store
+          let violation =
+            build_violation(reason, root, store_dir, config, sid)
           let _ = store.write(violation, store_dir)
           write_exit_record(base, exit_code, "violation: " <> reason)
         }
@@ -258,19 +263,109 @@ fn thought_shard(chunk: String, mcp_state: mcp.State) -> fragmentation.Fragment 
   fragmentation.shard(r, w, chunk)
 }
 
-/// Record a tamper detection event as a witnessed Fragment.
-/// Written to the store so it travels with the session into .mara/gestalt.
-fn violation_shard(reason: String) -> fragmentation.Fragment {
+/// Build a full @violation Fragment.
+///
+/// Contains:
+///   - prompt and model (the full execution context)
+///   - session identity (author, session id)
+///   - recorded root SHA (what gall held in memory)
+///   - findings: a Fragment whose children are one Shard per node in the
+///     recorded tree, each describing what was actually found on disk:
+///     "<sha>: present | missing | tampered\nexpected:...\nfound:..."
+///
+/// The recorded path is the in-memory Fragment tree.
+/// The found path is the disk audit of that same tree.
+/// Diff them to see exactly what changed.
+fn build_violation(
+  reason: String,
+  root: fragmentation.Fragment,
+  store_dir: String,
+  config: RunConfig,
+  sid: String,
+) -> fragmentation.Fragment {
   let ts = int.to_string(now())
-  let w =
-    fragmentation.witnessed(
-      fragmentation.Author("violation@systemic.engineering"),
-      fragmentation.Committer("gall"),
-      fragmentation.Timestamp(ts),
-      fragmentation.Message("@violation"),
+  let root_sha = fragmentation.hash_fragment(root)
+
+  // One Shard per Fragment in the recorded tree, describing the disk state.
+  let finding_shards = audit_findings(root, store_dir, ts)
+
+  // Wrap findings in a Fragment so the diff is structurally locatable.
+  let findings_frag =
+    fragmentation.fragment(
+      fragmentation.ref(
+        fragmentation.hash("findings" <> ts <> root_sha),
+        "findings",
+      ),
+      violation_witnessed(ts, "@violation findings"),
+      "findings",
+      finding_shards,
     )
-  let r = fragmentation.ref(fragmentation.hash(ts <> reason), "violation")
-  fragmentation.shard(r, w, reason)
+
+  let children = [
+    meta_shard("prompt", config.prompt, ts),
+    meta_shard("model", config.model, ts),
+    meta_shard("session", config.nickname <> "/" <> sid, ts),
+    meta_shard("recorded_root", root_sha, ts),
+    findings_frag,
+  ]
+
+  fragmentation.fragment(
+    fragmentation.ref(fragmentation.hash(ts <> reason), "violation"),
+    violation_witnessed(ts, "@violation " <> reason),
+    reason,
+    children,
+  )
+}
+
+/// Audit every Fragment in the recorded tree against disk.
+/// Returns one finding Shard per node.
+fn audit_findings(
+  root: fragmentation.Fragment,
+  store_dir: String,
+  ts: String,
+) -> List(fragmentation.Fragment) {
+  walk.collect(root)
+  |> list.map(fn(frag) {
+    let sha = fragmentation.hash_fragment(frag)
+    let expected = fragmentation.serialize(frag)
+    let path = store_dir <> "/" <> sha
+    let finding = case simplifile.read(path) {
+      Error(_) -> sha <> ": missing"
+      Ok(on_disk) ->
+        case on_disk == expected {
+          True -> sha <> ": present"
+          False ->
+            sha
+            <> ": tampered\nexpected:\n"
+            <> expected
+            <> "\nfound:\n"
+            <> on_disk
+        }
+    }
+    fragmentation.shard(
+      fragmentation.ref(fragmentation.hash(ts <> sha), "finding"),
+      violation_witnessed(ts, "@violation finding"),
+      finding,
+    )
+  })
+}
+
+fn meta_shard(key: String, value: String, ts: String) -> fragmentation.Fragment {
+  let data = key <> ": " <> value
+  fragmentation.shard(
+    fragmentation.ref(fragmentation.hash(ts <> data), key),
+    violation_witnessed(ts, "@violation meta"),
+    data,
+  )
+}
+
+fn violation_witnessed(ts: String, msg: String) -> fragmentation.Witnessed {
+  fragmentation.witnessed(
+    fragmentation.Author("violation@systemic.engineering"),
+    fragmentation.Committer("gall"),
+    fragmentation.Timestamp(ts),
+    fragmentation.Message(msg),
+  )
 }
 
 // ---------------------------------------------------------------------------
