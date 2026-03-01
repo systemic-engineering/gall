@@ -17,8 +17,8 @@
 /// The nickname from initialize becomes Author("<nickname>@systemic.engineering")
 /// on every Fragment in the session. Identity is a protocol requirement.
 import fragmentation
-import gall/json
-import gall/session
+import ghall/json
+import ghall/session
 import gleam/dynamic
 import gleam/int
 import gleam/list

@@ -1,6 +1,6 @@
-name = "gall"
+name = "ghall"
 version = "0.1.0"
-description = "gall — tamper-proof witnessed agent work. In git. The audacity."
+description = "ghall — tamper-proof witnessed agent work. In git. The audacity."
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "systemic-engineering", repo = "gall" }
 

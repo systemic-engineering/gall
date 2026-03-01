@@ -1,5 +1,5 @@
 import fragmentation
-import gall/session
+import ghall/session
 import gleam/list
 import gleeunit/should
 

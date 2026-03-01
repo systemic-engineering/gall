@@ -21,9 +21,9 @@
 /// That's what makes it witnessing, not logging.
 import fragmentation
 import fragmentation/walk
-import gall/mcp
-import gall/session
-import gall/store
+import ghall/mcp
+import ghall/session
+import ghall/store
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -44,30 +44,34 @@ pub type Event {
   AgentExit(code: Int)
   McpClosed
   Timeout
+  Killed
 }
 
-@external(erlang, "gall_ffi", "session_id")
+@external(erlang, "ghall_ffi", "session_id")
 fn session_id() -> String
 
-@external(erlang, "gall_ffi", "start_unix_socket")
+@external(erlang, "ghall_ffi", "setup_signal_handlers")
+fn setup_signal_handlers() -> Nil
+
+@external(erlang, "ghall_ffi", "start_unix_socket")
 fn start_unix_socket(path: String) -> Result(McpSocket, String)
 
-@external(erlang, "gall_ffi", "accept_client")
+@external(erlang, "ghall_ffi", "accept_client")
 fn accept_client(listen_sock: McpSocket) -> Result(McpSocket, String)
 
-@external(erlang, "gall_ffi", "set_active")
+@external(erlang, "ghall_ffi", "set_active")
 fn set_active(sock: McpSocket) -> Nil
 
-@external(erlang, "gall_ffi", "send_socket")
+@external(erlang, "ghall_ffi", "send_socket")
 fn send_socket(sock: McpSocket, data: String) -> Nil
 
-@external(erlang, "gall_ffi", "spawn_claude")
+@external(erlang, "ghall_ffi", "spawn_claude")
 fn spawn_claude(exe: String, args: List(String)) -> ClaudePort
 
-@external(erlang, "gall_ffi", "receive_event")
+@external(erlang, "ghall_ffi", "receive_event")
 fn receive_event(port: ClaudePort, sock: McpSocket) -> Event
 
-@external(erlang, "gall_ffi", "now")
+@external(erlang, "ghall_ffi", "now")
 fn now() -> Int
 
 // ---------------------------------------------------------------------------
@@ -104,8 +108,12 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 pub fn run(config: RunConfig) -> Nil {
+  // Catch SIGTERM and SIGHUP — deliver as messages, not instant death.
+  // SIGKILL cannot be caught; eager writes are our defence there.
+  let _ = setup_signal_handlers()
+
   let sid = session_id()
-  let base = config.work_dir <> "/.gall/" <> config.nickname <> "/" <> sid
+  let base = config.work_dir <> "/.ghall/" <> config.nickname <> "/" <> sid
   let store_dir = base <> "/store"
   let sock_path = base <> "/mcp.sock"
   let mcp_config_path = base <> "/mcp.json"
@@ -139,24 +147,34 @@ pub fn run(config: RunConfig) -> Nil {
   let #(final_mcp_state, exit_code) =
     event_loop(mcp_state, port, conn_sock, store_dir, [])
 
-  // Final verification pass
-  case get_session_root(final_mcp_state) {
-    None ->
-      // Session never committed — partial run, no root to verify
-      write_exit_record(base, exit_code, "no-commit")
-    Some(#(root, _sha)) ->
-      case store.verify(root, store_dir) {
-        Ok(Nil) -> {
-          write_exit_record(base, exit_code, "ok")
-          // TODO: git commit to .mara/gestalt
-        }
-        Error(reason) -> {
-          // Tamper detected — build the full violation record and write to store
-          let violation =
-            build_violation(reason, root, store_dir, config, sid)
-          let _ = store.write(violation, store_dir)
-          write_exit_record(base, exit_code, "violation: " <> reason)
-        }
+  // If ghall was killed by a signal, record it before doing anything else.
+  // exit_code -2 = killed. Write @killed to store so it travels into .gestalt.
+  case exit_code == -2 {
+    True -> {
+      let killed_frag = killed_shard(final_mcp_state)
+      let _ = store.write(killed_frag, store_dir)
+      write_exit_record(base, exit_code, "killed")
+    }
+    False ->
+      // Final verification pass
+      case get_session_root(final_mcp_state) {
+        None ->
+          // Session never committed — partial run, no root to verify
+          write_exit_record(base, exit_code, "no-commit")
+        Some(#(root, _sha)) ->
+          case store.verify(root, store_dir) {
+            Ok(Nil) -> {
+              write_exit_record(base, exit_code, "ok")
+              // TODO: git commit to .mara/gestalt
+            }
+            Error(reason) -> {
+              // Tamper detected — build the full violation record and write to store
+              let violation =
+                build_violation(reason, root, store_dir, config, sid)
+              let _ = store.write(violation, store_dir)
+              write_exit_record(base, exit_code, "violation: " <> reason)
+            }
+          }
       }
   }
 }
@@ -234,6 +252,10 @@ fn event_loop(
 
     // Safety timeout — treat as exit
     Timeout -> #(mcp_state, -1)
+
+    // OS signal (SIGTERM / SIGHUP) — graceful shutdown.
+    // Eager writes mean disk is current. Verify and exit cleanly.
+    Killed -> #(mcp_state, -2)
   }
 }
 
@@ -261,6 +283,29 @@ fn thought_shard(chunk: String, mcp_state: mcp.State) -> fragmentation.Fragment 
     )
   let r = fragmentation.ref(fragmentation.hash(ts <> chunk), "thought")
   fragmentation.shard(r, w, chunk)
+}
+
+/// Record that ghall itself was killed by an OS signal.
+/// The session was running. Someone or something sent SIGTERM/SIGHUP.
+/// Written to store so it travels into .gestalt regardless of session state.
+fn killed_shard(mcp_state: mcp.State) -> fragmentation.Fragment {
+  let author = case mcp_state {
+    mcp.Uninitialized -> "unknown@systemic.engineering"
+    mcp.Ready(s) -> {
+      let session.SessionConfig(author: a, ..) = session.config(s)
+      a
+    }
+  }
+  let ts = int.to_string(now())
+  let w =
+    fragmentation.witnessed(
+      fragmentation.Author(author),
+      fragmentation.Committer("ghall"),
+      fragmentation.Timestamp(ts),
+      fragmentation.Message("@killed"),
+    )
+  let r = fragmentation.ref(fragmentation.hash(ts <> "@killed"), "killed")
+  fragmentation.shard(r, w, "@killed: ghall received SIGTERM or SIGHUP")
 }
 
 /// Build a full @violation Fragment.

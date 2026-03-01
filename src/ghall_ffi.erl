@@ -1,9 +1,10 @@
--module(gall_ffi).
+-module(ghall_ffi).
 -export([
     now/0,
     keygen/1,
     get_env/1,
     session_id/0,
+    setup_signal_handlers/0,
     start_unix_socket/1,
     accept_client/1,
     set_active/1,
@@ -55,6 +56,22 @@ keygen(Path) ->
         Output ->
             {error, unicode:characters_to_binary(Output)}
     end.
+
+%% ---------------------------------------------------------------------------
+%% Signal handling
+%% ---------------------------------------------------------------------------
+
+%% Register OS signal handlers. Call once at startup.
+%%
+%% SIGTERM: delivered as 'sigterm' to the process mailbox — graceful shutdown.
+%% SIGHUP:  delivered as 'sighup'  — terminal closed / supervisor restart.
+%% SIGKILL: uncatchable. Eager writes mean minimal data loss on -9.
+%%
+%% After setup, receive_event/2 will return 'killed' on either signal.
+setup_signal_handlers() ->
+    os:set_signal(sigterm, handle),
+    os:set_signal(sighup, handle),
+    ok.
 
 %% ---------------------------------------------------------------------------
 %% Unix socket (MCP transport)
@@ -135,7 +152,11 @@ receive_event(Port, Sock) ->
         {tcp_closed, Sock} ->
             mcp_closed;
         {tcp_error, Sock, _Reason} ->
-            mcp_closed
+            mcp_closed;
+        sigterm ->
+            killed;
+        sighup ->
+            killed
     after
         600_000 ->
             timeout

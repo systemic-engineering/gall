@@ -1,5 +1,5 @@
 import fragmentation
-import gall/store
+import ghall/store
 import gleeunit/should
 import simplifile
 

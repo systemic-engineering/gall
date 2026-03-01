@@ -1,4 +1,4 @@
--module(gall_json_ffi).
+-module(ghall_json_ffi).
 -export([decode/1, encode/1, get_string/2, get_list/2]).
 
 %% Decode a JSON string. Returns {ok, Value} | {error, Reason}.

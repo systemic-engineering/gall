@@ -24,7 +24,7 @@ import gleam/option.{type Option, None, Some}
 // FFI
 // ---------------------------------------------------------------------------
 
-@external(erlang, "gall_ffi", "now")
+@external(erlang, "ghall_ffi", "now")
 fn now() -> Int
 
 // ---------------------------------------------------------------------------
