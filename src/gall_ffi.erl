@@ -12,7 +12,10 @@
     spawn_claude/2,
     receive_event/2,
     git_ensure_repo/1,
-    git_commit_session/6
+    git_commit_session/6,
+    read_config_tag/1,
+    write_config_tag/2,
+    send_patch/2
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -324,4 +327,55 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
     file:delete(KeyFile),
     file:delete(CommitMsgFile),
     file:delete(TagMsgFile),
+    ok.
+
+%% ---------------------------------------------------------------------------
+%% Config tag (.gall/config)
+%% ---------------------------------------------------------------------------
+
+%% Read the config tag message. Returns "" if tag does not exist.
+read_config_tag(RepoDir) ->
+    PathStr = binary_to_list(RepoDir),
+    Raw = os:cmd("git -C " ++ PathStr
+                 ++ " tag -l config --format='%(contents)' 2>/dev/null"),
+    list_to_binary(string:trim(Raw)).
+
+%% Write (or overwrite) the config tag with Contents as the message.
+%% The tag is signed with the derived agent key — same trust chain as sessions.
+write_config_tag(RepoDir, Contents) ->
+    PathStr  = binary_to_list(RepoDir),
+    MsgFile  = PathStr ++ "/.git/GALL_CONFIG_MSG",
+    ok = file:write_file(MsgFile, Contents),
+    os:cmd("git -C " ++ PathStr ++ " tag -d config 2>/dev/null"),
+    os:cmd("git -C " ++ PathStr ++ " tag -a config -F " ++ MsgFile),
+    file:delete(MsgFile),
+    ok.
+
+%% ---------------------------------------------------------------------------
+%% Sync — send session patch
+%% ---------------------------------------------------------------------------
+
+%% Send the most recent .gall/ commit as a patch to Remote.
+%%
+%% Remote contains '@'  → email recipient, sent via git send-email
+%% Remote is a git URL  → git push
+%%
+%% The patch IS the witnessed gestalt commit: Fragment files + signed tag.
+send_patch(RepoDir, Remote) ->
+    PathStr   = binary_to_list(RepoDir),
+    RemoteStr = binary_to_list(Remote),
+    case lists:member($@, RemoteStr) of
+        true ->
+            %% Email: format patch and pipe through git send-email.
+            os:cmd("git -C " ++ PathStr
+                   ++ " send-email"
+                   ++ " --to=" ++ RemoteStr
+                   ++ " --suppress-cc=all"
+                   ++ " --no-signed-off-by-cc"
+                   ++ " HEAD~1..HEAD 2>&1");
+        false ->
+            %% Git remote: push the gestalt commit.
+            os:cmd("git -C " ++ PathStr
+                   ++ " push " ++ RemoteStr ++ " HEAD 2>&1")
+    end,
     ok.

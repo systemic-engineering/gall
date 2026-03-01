@@ -21,6 +21,7 @@
 /// That's what makes it witnessing, not logging.
 import fragmentation
 import fragmentation/walk
+import gall/config as gall_config
 import gall/mcp
 import gall/session
 import gall/store
@@ -86,6 +87,12 @@ fn git_commit_session(
   root_sha: String,
   alex_key: String,
 ) -> Nil
+
+@external(erlang, "gall_ffi", "read_config_tag")
+fn read_config_tag(repo_dir: String) -> String
+
+@external(erlang, "gall_ffi", "send_patch")
+fn send_patch(repo_dir: String, remote: String) -> Nil
 
 // ---------------------------------------------------------------------------
 // Config
@@ -194,6 +201,12 @@ pub fn run(config: RunConfig) -> Nil {
                 sha,
                 config.alex_key,
               )
+              // Sync if enabled in config tag
+              let sync_cfg = gall_config.parse(read_config_tag(repo_dir))
+              case sync_cfg.sync {
+                True -> send_patch(repo_dir, sync_cfg.sync_remote)
+                False -> Nil
+              }
             }
             Error(reason) -> {
               // Tamper detected — build the full violation record and write to store
