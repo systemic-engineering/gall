@@ -35,9 +35,7 @@ pub fn act_returns_act_ref_test() {
       name: "test-session",
     )
   let s = session.new(config)
-  // We need a DecRef to pass to act. Construct a minimal one.
-  let dec_ref = session.DecRef(sha: "fake-dec-sha")
-  let #(_s, ref) = session.act(s, dec_ref, "do something")
+  let #(_s, ref) = session.act(s, "do something")
   case ref {
     session.ActRef(_sha) -> should.be_ok(Ok(Nil))
     _ -> should.be_ok(Error("expected ActRef"))
@@ -53,9 +51,7 @@ pub fn decide_wraps_acts_test() {
     session.SessionConfig(author: "reed@systemic.engineering", name: "test")
   let s = session.new(config)
 
-  // Build an act fragment first
-  let dec_ref = session.DecRef(sha: "placeholder")
-  let #(s, act_ref) = session.act(s, dec_ref, "annotate: fn:fragment")
+  let #(s, act_ref) = session.act(s, "annotate: fn:fragment")
 
   // Retrieve the act fragment from session using the ref
   let act_frags = session.fragments_for_ref(s, act_ref)
@@ -135,8 +131,7 @@ pub fn commit_deterministic_test() {
     )
 
   let s1 = session.new(config)
-  let dec_ref1 = session.DecRef(sha: "dec1")
-  let #(s1, act_ref1) = session.act(s1, dec_ref1, "annotate: fn:fragment")
+  let #(s1, act_ref1) = session.act(s1, "annotate: fn:fragment")
   let act_frags1 = session.fragments_for_ref(s1, act_ref1)
   let obs_ref1 = session.ObsRef(sha: "obs1")
   let #(s1, dec_ref1b) =
@@ -153,8 +148,7 @@ pub fn commit_deterministic_test() {
   let #(_s1, _root1, sha1) = session.commit(s1, obs_frags1)
 
   let s2 = session.new(config)
-  let dec_ref2 = session.DecRef(sha: "dec1")
-  let #(s2, act_ref2) = session.act(s2, dec_ref2, "annotate: fn:fragment")
+  let #(s2, act_ref2) = session.act(s2, "annotate: fn:fragment")
   let act_frags2 = session.fragments_for_ref(s2, act_ref2)
   let obs_ref2 = session.ObsRef(sha: "obs1")
   let #(s2, dec_ref2b) =
@@ -185,8 +179,7 @@ pub fn author_from_config_test() {
       name: "auth-test",
     )
   let s = session.new(config)
-  let dec_ref = session.DecRef(sha: "placeholder")
-  let #(s, act_ref) = session.act(s, dec_ref, "some action")
+  let #(s, act_ref) = session.act(s, "some action")
   let act_frags = session.fragments_for_ref(s, act_ref)
   let frag = case act_frags {
     [f, ..] -> f

@@ -61,17 +61,12 @@ pub fn new(config: SessionConfig) -> Session {
 // ADO — build bottom-up: Act → Decide → Observe → Commit
 // ---------------------------------------------------------------------------
 
-/// Record an action linked to a decision (by DecRef).
+/// Record an action. Call before decide — acts are passed as children.
 /// annotation: what was done (e.g. "annotate: fn:fragment is required")
 /// Returns updated session and an ActRef.
-pub fn act(
-  session: Session,
-  dec_ref: Ref,
-  annotation: String,
-) -> #(Session, Ref) {
-  let dec_sha = ref_sha(dec_ref)
-  let w = witnessed(session.config, "act: " <> dec_sha)
-  let content = dec_sha <> annotation
+pub fn act(session: Session, annotation: String) -> #(Session, Ref) {
+  let w = witnessed(session.config, "act")
+  let content = annotation
   let frag =
     fragmentation.shard(
       fragmentation.ref(fragmentation.hash(content), "act"),
@@ -189,7 +184,7 @@ pub fn fragments_for_ref(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn ref_sha(r: Ref) -> String {
+pub fn ref_sha(r: Ref) -> String {
   case r {
     ObsRef(sha) -> sha
     DecRef(sha) -> sha
