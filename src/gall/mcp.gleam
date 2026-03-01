@@ -1,12 +1,18 @@
-/// Gall MCP server.
+/// Gall MCP protocol handler.
 ///
-/// Stdio JSON-RPC 2.0. Newline-framed.
+/// Transport-agnostic. Parses JSON-RPC, dispatches tools, returns:
+///   - the next state
+///   - the JSON response string to send (None = notification, no reply)
+///   - the newly created Fragment (None = no Fragment this call)
+///
+/// The orchestrator (gall.gleam) owns the socket I/O and disk writes.
+/// It calls handle/2 on each incoming message and acts on the outputs.
 ///
 /// Protocol:
 ///   client → initialize(clientInfo.name = nickname)
 ///   server → capabilities + tool list
 ///   client → tools/call: observe | decide | act | commit
-///   client exits → gall commits session to .mara/gestalt
+///   client exits → gall verifies store + commits session
 ///
 /// The nickname from initialize becomes Author("<nickname>@systemic.engineering")
 /// on every Fragment in the session. Identity is a protocol requirement.
@@ -16,85 +22,45 @@ import gall/session
 import gleam/dynamic
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-
-// ---------------------------------------------------------------------------
-// FFI
-// ---------------------------------------------------------------------------
-
-@external(erlang, "gall_ffi", "read_line")
-fn read_line() -> Result(String, Nil)
-
-@external(erlang, "gall_ffi", "write_line")
-fn write_line(line: String) -> Nil
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-pub fn main() -> Nil {
-  loop(Uninitialized)
-}
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-type State {
+pub type State {
   Uninitialized
   Ready(session: session.Session)
 }
 
 // ---------------------------------------------------------------------------
-// Loop
+// Handle
 // ---------------------------------------------------------------------------
 
-fn loop(state: State) -> Nil {
-  case read_line() {
-    Error(Nil) -> on_exit(state)
-    Ok(line) ->
-      case string.trim(line) {
-        "" -> loop(state)
-        json -> {
-          let next = dispatch(state, json)
-          loop(next)
-        }
-      }
-  }
-}
-
-fn on_exit(state: State) -> Nil {
-  case state {
-    Uninitialized -> Nil
-    Ready(_session) ->
-      // TODO: commit session to .mara/gestalt with exit code
-      Nil
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-fn dispatch(state: State, json: String) -> State {
-  // Minimal JSON field extraction via string matching.
-  // Replaced with thoas once deps download completes.
+/// Handle one JSON-RPC message.
+/// Returns #(next_state, maybe_response_json, maybe_new_fragment).
+///
+/// maybe_response_json: Some(json) = send to client; None = notification (no reply)
+/// maybe_new_fragment:  Some(frag) = write to store immediately; None = no new fragment
+pub fn handle(
+  state: State,
+  json: String,
+) -> #(State, Option(String), Option(fragmentation.Fragment)) {
   let method = extract_field(json, "method")
   let id = extract_field(json, "id")
 
   case method {
     "initialize" -> handle_initialize(state, id, json)
-    "notifications/initialized" -> state
-    "tools/list" -> {
-      handle_tools_list(id)
-      state
-    }
+    "notifications/initialized" -> #(state, None, None)
+    "tools/list" -> #(state, Some(make_response(id, tools_json())), None)
     "tools/call" -> handle_tool_call(state, id, json)
-    _ -> {
-      write_error(id, -32_601, "method not found: " <> method)
-      state
-    }
+    _ -> #(
+      state,
+      Some(make_error(id, -32_601, "method not found: " <> method)),
+      None,
+    )
   }
 }
 
@@ -102,44 +68,64 @@ fn dispatch(state: State, json: String) -> State {
 // Handlers
 // ---------------------------------------------------------------------------
 
-fn handle_initialize(state: State, id: String, json: String) -> State {
+fn handle_initialize(
+  state: State,
+  id: String,
+  json: String,
+) -> #(State, Option(String), Option(fragmentation.Fragment)) {
   let nickname = extract_nested(json, "clientInfo", "name")
   let author = nickname <> "@systemic.engineering"
   let config = session.SessionConfig(author: author, name: "gall-session")
   let s = session.new(config)
 
-  write_response(
-    id,
-    "{\"protocolVersion\":\"2024-11-05\","
-      <> "\"capabilities\":{\"tools\":{}},"
-      <> "\"serverInfo\":{\"name\":\"gall\",\"version\":\"0.1.0\"}}",
-  )
+  let response =
+    make_response(
+      id,
+      "{\"protocolVersion\":\"2024-11-05\","
+        <> "\"capabilities\":{\"tools\":{}},"
+        <> "\"serverInfo\":{\"name\":\"gall\",\"version\":\"0.1.0\"}}",
+    )
 
   case state {
-    Uninitialized -> Ready(session: s)
-    Ready(_) -> Ready(session: s)
+    Uninitialized -> #(Ready(session: s), Some(response), None)
+    Ready(_) -> #(Ready(session: s), Some(response), None)
   }
 }
 
-fn handle_tools_list(id: String) -> Nil {
-  write_response(id, tools_json())
-}
-
-fn handle_tool_call(state: State, id: String, json: String) -> State {
+fn handle_tool_call(
+  state: State,
+  id: String,
+  json: String,
+) -> #(State, Option(String), Option(fragmentation.Fragment)) {
   case state {
-    Uninitialized -> {
-      write_error(id, -32_002, "not initialized")
-      state
-    }
+    Uninitialized -> #(
+      state,
+      Some(make_error(id, -32_002, "not initialized")),
+      None,
+    )
     Ready(s) -> {
       let name = extract_nested(json, "params", "name")
-      let args = extract_nested(json, "params", "arguments")
-      let #(next_s, result_json) = call_tool(s, name, args)
-      write_response(
-        id,
-        "{\"content\":[{\"type\":\"text\",\"text\":" <> result_json <> "}]}",
-      )
-      Ready(session: next_s)
+      let args_str = extract_object(json, "params", "arguments")
+      case json.decode(args_str) {
+        Error(_) -> #(
+          state,
+          Some(
+            make_response(
+              id,
+              content_text(err_json("invalid args json")),
+            ),
+          ),
+          None,
+        )
+        Ok(args) -> {
+          let #(next_s, result_json, maybe_frag) = call_tool(s, name, args)
+          #(
+            Ready(session: next_s),
+            Some(make_response(id, content_text(result_json))),
+            maybe_frag,
+          )
+        }
+      }
     }
   }
 }
@@ -147,31 +133,29 @@ fn handle_tool_call(state: State, id: String, json: String) -> State {
 fn call_tool(
   s: session.Session,
   name: String,
-  args_str: String,
-) -> #(session.Session, String) {
-  case json.decode(args_str) {
-    Error(_) -> #(s, err_json("invalid args json"))
-    Ok(args) ->
-      case name {
-        "act" -> tool_act(s, args)
-        "decide" -> tool_decide(s, args)
-        "observe" -> tool_observe(s, args)
-        "commit" -> tool_commit(s, args)
-        _ -> #(s, err_json("unknown tool: " <> name))
-      }
+  args: dynamic.Dynamic,
+) -> #(session.Session, String, Option(fragmentation.Fragment)) {
+  case name {
+    "act" -> tool_act(s, args)
+    "decide" -> tool_decide(s, args)
+    "observe" -> tool_observe(s, args)
+    "commit" -> tool_commit(s, args)
+    _ -> #(s, err_json("unknown tool: " <> name), None)
   }
 }
 
 fn tool_act(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String) {
+) -> #(session.Session, String, Option(fragmentation.Fragment)) {
   case json.get_string(args, "annotation") {
-    Error(Nil) -> #(s, err_json("act requires annotation"))
+    Error(Nil) -> #(s, err_json("act requires annotation"), None)
     Ok(annotation) -> {
       let #(s2, ref) = session.act(s, annotation)
       let sha = session.ref_sha(ref)
-      #(s2, "{\"act_sha\":\"" <> sha <> "\"}")
+      let frags = session.fragments_for_ref(s2, ref)
+      let frag = list.first(frags) |> result.unwrap(dummy_shard())
+      #(s2, "{\"act_sha\":\"" <> sha <> "\"}", Some(frag))
     }
   }
 }
@@ -179,9 +163,9 @@ fn tool_act(
 fn tool_decide(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String) {
+) -> #(session.Session, String, Option(fragmentation.Fragment)) {
   case json.get_string(args, "rule") {
-    Error(Nil) -> #(s, err_json("decide requires rule"))
+    Error(Nil) -> #(s, err_json("decide requires rule"), None)
     Ok(rule) -> {
       let obs_sha = result.unwrap(json.get_string(args, "obs_sha"), "")
       let obs_ref = session.ObsRef(sha: obs_sha)
@@ -189,7 +173,9 @@ fn tool_decide(
       let acts = shas_to_fragments(s, list.map(act_shas, session.ActRef))
       let #(s2, ref) = session.decide(s, obs_ref, rule, acts)
       let sha = session.ref_sha(ref)
-      #(s2, "{\"dec_sha\":\"" <> sha <> "\"}")
+      let frags = session.fragments_for_ref(s2, ref)
+      let frag = list.first(frags) |> result.unwrap(dummy_shard())
+      #(s2, "{\"dec_sha\":\"" <> sha <> "\"}", Some(frag))
     }
   }
 }
@@ -197,31 +183,33 @@ fn tool_decide(
 fn tool_observe(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String) {
+) -> #(session.Session, String, Option(fragmentation.Fragment)) {
   case json.get_string(args, "ref"), json.get_string(args, "data") {
     Ok(ref), Ok(data) -> {
       let dec_shas = result.unwrap(json.get_list(args, "decisions"), [])
       let decisions = shas_to_fragments(s, list.map(dec_shas, session.DecRef))
       let #(s2, obs_ref) = session.observe(s, ref, data, decisions)
       let sha = session.ref_sha(obs_ref)
-      #(s2, "{\"obs_sha\":\"" <> sha <> "\"}")
+      let frags = session.fragments_for_ref(s2, obs_ref)
+      let frag = list.first(frags) |> result.unwrap(dummy_shard())
+      #(s2, "{\"obs_sha\":\"" <> sha <> "\"}", Some(frag))
     }
-    _, _ -> #(s, err_json("observe requires ref and data"))
+    _, _ -> #(s, err_json("observe requires ref and data"), None)
   }
 }
 
 fn tool_commit(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String) {
+) -> #(session.Session, String, Option(fragmentation.Fragment)) {
   case json.get_string(args, "name") {
-    Error(Nil) -> #(s, err_json("commit requires name"))
-    Ok(name) -> {
+    Error(Nil) -> #(s, err_json("commit requires name"), None)
+    Ok(_name) -> {
       let obs_shas = result.unwrap(json.get_list(args, "observations"), [])
       let observations =
         shas_to_fragments(s, list.map(obs_shas, session.ObsRef))
-      let #(s2, _root, sha) = session.commit(s, observations)
-      #(s2, "{\"root_sha\":\"" <> sha <> "\"}")
+      let #(s2, root, sha) = session.commit(s, observations)
+      #(s2, "{\"root_sha\":\"" <> sha <> "\"}", Some(root))
     }
   }
 }
@@ -233,8 +221,52 @@ fn shas_to_fragments(
   list.flat_map(refs, session.fragments_for_ref(s, _))
 }
 
+// Fallback for when a tool's fragment lookup fails.
+// Should never happen in practice — acts, decides, observes always store.
+fn dummy_shard() -> fragmentation.Fragment {
+  let r = fragmentation.ref(fragmentation.hash("dummy"), "dummy")
+  let w =
+    fragmentation.witnessed(
+      fragmentation.Author("gall"),
+      fragmentation.Committer("gall"),
+      fragmentation.Timestamp("0"),
+      fragmentation.Message("dummy"),
+    )
+  fragmentation.shard(r, w, "dummy")
+}
+
 fn err_json(msg: String) -> String {
   "{\"error\":\"" <> msg <> "\"}"
+}
+
+fn content_text(json_str: String) -> String {
+  "{\"content\":[{\"type\":\"text\",\"text\":" <> json_str <> "}]}"
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC response builders (pure strings, no transport)
+// ---------------------------------------------------------------------------
+
+fn make_response(id: String, result: String) -> String {
+  "{\"jsonrpc\":\"2.0\","
+  <> "\"id\":"
+  <> id
+  <> ","
+  <> "\"result\":"
+  <> result
+  <> "}"
+}
+
+fn make_error(id: String, code: Int, message: String) -> String {
+  "{\"jsonrpc\":\"2.0\","
+  <> "\"id\":"
+  <> id
+  <> ","
+  <> "\"error\":{\"code\":"
+  <> int.to_string(code)
+  <> ",\"message\":\""
+  <> message
+  <> "\"}}"
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +274,6 @@ fn err_json(msg: String) -> String {
 // ---------------------------------------------------------------------------
 
 /// Extract a top-level string field from a JSON object.
-/// "method":"initialize" → "initialize"
 fn extract_field(json: String, field: String) -> String {
   let needle = "\"" <> field <> "\":"
   case string.split_once(json, needle) {
@@ -251,12 +282,28 @@ fn extract_field(json: String, field: String) -> String {
   }
 }
 
-/// Extract a nested field: params.name
+/// Extract a nested string field: parent.child
 fn extract_nested(json: String, parent: String, child: String) -> String {
   let parent_needle = "\"" <> parent <> "\":"
   case string.split_once(json, parent_needle) {
     Error(Nil) -> ""
     Ok(#(_, rest)) -> extract_field(rest, child)
+  }
+}
+
+/// Extract the raw JSON value of a nested object field.
+/// Returns the raw JSON string for the value (for passing to thoas).
+fn extract_object(json: String, parent: String, child: String) -> String {
+  let parent_needle = "\"" <> parent <> "\":"
+  case string.split_once(json, parent_needle) {
+    Error(Nil) -> "{}"
+    Ok(#(_, rest)) -> {
+      let child_needle = "\"" <> child <> "\":"
+      case string.split_once(rest, child_needle) {
+        Error(Nil) -> "{}"
+        Ok(#(_, after)) -> extract_json_value(string.trim_start(after))
+      }
+    }
   }
 }
 
@@ -271,34 +318,64 @@ fn extract_string_value(s: String) -> String {
   }
 }
 
-// ---------------------------------------------------------------------------
-// JSON-RPC response writers
-// ---------------------------------------------------------------------------
-
-fn write_response(id: String, result: String) -> Nil {
-  let msg =
-    "{\"jsonrpc\":\"2.0\","
-    <> "\"id\":"
-    <> id
-    <> ","
-    <> "\"result\":"
-    <> result
-    <> "}"
-  write_line(msg)
+fn extract_json_value(s: String) -> String {
+  case s {
+    "{" <> _ -> extract_balanced(s, "{", "}")
+    "[" <> _ -> extract_balanced(s, "[", "]")
+    "\"" <> _ -> "\"" <> extract_quoted(s)
+    _ -> extract_primitive(s)
+  }
 }
 
-fn write_error(id: String, code: Int, message: String) -> Nil {
-  let msg =
-    "{\"jsonrpc\":\"2.0\","
-    <> "\"id\":"
-    <> id
-    <> ","
-    <> "\"error\":{\"code\":"
-    <> int.to_string(code)
-    <> ",\"message\":\""
-    <> message
-    <> "\"}}"
-  write_line(msg)
+fn extract_balanced(s: String, open: String, close: String) -> String {
+  do_extract_balanced(s, open, close, 0, "")
+}
+
+fn do_extract_balanced(
+  s: String,
+  open: String,
+  close: String,
+  depth: Int,
+  acc: String,
+) -> String {
+  case s {
+    "" -> acc
+    _ -> {
+      let first = string.slice(s, 0, 1)
+      let rest = string.drop_start(s, 1)
+      let new_acc = acc <> first
+      case first {
+        c if c == open -> do_extract_balanced(rest, open, close, depth + 1, new_acc)
+        c if c == close ->
+          case depth - 1 {
+            0 -> new_acc
+            d -> do_extract_balanced(rest, open, close, d, new_acc)
+          }
+        _ -> do_extract_balanced(rest, open, close, depth, new_acc)
+      }
+    }
+  }
+}
+
+fn extract_quoted(s: String) -> String {
+  case string.drop_start(s, 1) {
+    rest ->
+      case string.split_once(rest, "\"") {
+        Ok(#(value, _)) -> value <> "\""
+        Error(Nil) -> ""
+      }
+  }
+}
+
+fn extract_primitive(s: String) -> String {
+  case string.split_once(s, ",") {
+    Ok(#(v, _)) -> string.trim(v)
+    Error(Nil) ->
+      case string.split_once(s, "}") {
+        Ok(#(v, _)) -> string.trim(v)
+        Error(Nil) -> string.trim(s)
+      }
+  }
 }
 
 // ---------------------------------------------------------------------------

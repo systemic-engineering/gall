@@ -18,6 +18,7 @@
 import fragmentation
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 
 // ---------------------------------------------------------------------------
 // FFI
@@ -46,6 +47,8 @@ pub opaque type Session {
     config: SessionConfig,
     /// All built fragments, keyed by their SHA for retrieval.
     store: List(#(String, fragmentation.Fragment)),
+    /// The last committed root, if commit was called.
+    last_root: Option(#(fragmentation.Fragment, String)),
   )
 }
 
@@ -54,7 +57,17 @@ pub opaque type Session {
 // ---------------------------------------------------------------------------
 
 pub fn new(config: SessionConfig) -> Session {
-  Session(config: config, store: [])
+  Session(config: config, store: [], last_root: None)
+}
+
+/// Get the session config (author, name).
+pub fn config(session: Session) -> SessionConfig {
+  session.config
+}
+
+/// Get the last committed root Fragment and SHA, if commit was called.
+pub fn last_root(session: Session) -> Option(#(fragmentation.Fragment, String)) {
+  session.last_root
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +170,8 @@ pub fn commit(
       observations,
     )
   let sha = fragmentation.hash_fragment(root)
-  #(session, root, sha)
+  let updated = Session(..session, last_root: Some(#(root, sha)))
+  #(updated, root, sha)
 }
 
 // ---------------------------------------------------------------------------
