@@ -7,7 +7,6 @@ repository = { type = "github", user = "systemic-engineering", repo = "gall" }
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
 gleam_erlang = ">= 0.25.0 and < 2.0.0"
-gleam_json = ">= 2.0.0 and < 3.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 fragmentation = { path = "../fragmentation" }
 
