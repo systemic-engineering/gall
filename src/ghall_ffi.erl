@@ -168,55 +168,102 @@ receive_event(Port, Sock) ->
 %% Git persistence (.gall/gestalt)
 %% ---------------------------------------------------------------------------
 
-%% Ensure .gall/ is a git repo with an SSH signing key.
-%% Idempotent: safe to call on every session.
+%% Alex's ed25519 public key (32 raw bytes, no SSH header).
+%% Shipped as the root of trust. Agent keys are derived from this.
+%% TODO: replace placeholder with actual alex@systemic.engineering pubkey.
+alex_root_pubkey() ->
+    %% <<0:256>>.  %% placeholder — replace with real 32-byte pubkey
+    base64:decode(<<"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=">>).
+
+%% Derive an ed25519 agent keypair from Alex's public key + nickname.
 %%
-%% Signing key: .gall/ssh/id_ed25519  (ed25519, no passphrase)
-%% Allowed signers: .gall/allowed_signers
-%%   - ghall@systemic.engineering  <installation key>
-%%   - alex@systemic.engineering   <root fallback, shipped with ghall>
+%% seed = HMAC-SHA256(key=alex_pubkey, "ghall:" || nickname)
+%% {PubKey, PrivKey} = ed25519(seed)
 %%
-%% The allowed_signers file is the trust root for git verify-tag.
+%% Deterministic: same alex pubkey + same nickname → same keypair every time.
+%% Transparent: anyone with alex's public key can re-derive and verify.
+%%
+%% Security model: provenance, not secrecy.
+%% The key is not secret — the derivation formula is public.
+%% What it proves: this tag was produced by ghall using alex's root key.
+derive_agent_keypair(Nickname) ->
+    AlexPub = alex_root_pubkey(),
+    Seed    = crypto:mac(hmac, sha256, AlexPub, <<"ghall:", Nickname/binary>>),
+    crypto:generate_key(eddsa, ed25519, Seed).
+
+%% Format an ed25519 keypair as an OpenSSH private key file (unencrypted).
+%% Returns {PrivKeyPem, PubKeyLine}.
+openssh_ed25519(PubKey, PrivKey, Comment) ->
+    KeyType = <<"ssh-ed25519">>,
+    %% SSH wire-format string: uint32(len) ++ bytes
+    Str = fun(B) -> <<(byte_size(B)):32, B/binary>> end,
+    %% Public key blob: string(keytype) ++ string(pubkey)
+    PubBlob = <<(Str(KeyType))/binary, (Str(PubKey))/binary>>,
+    %% Inner private section:
+    %%   check1 + check2 (same 4 bytes, integrity check)
+    %%   string(keytype) ++ string(pubkey)
+    %%   string(privkey_full)  — 32-byte seed || 32-byte pubkey = 64 bytes
+    %%   string(comment)
+    Check      = <<16#2a2a2a2a:32>>,
+    PrivFull   = <<PrivKey/binary, PubKey/binary>>,
+    CommentBin = list_to_binary(Comment),
+    Inner0 = <<Check/binary, Check/binary,
+               (Str(KeyType))/binary,
+               (Str(PubKey))/binary,
+               (Str(PrivFull))/binary,
+               (Str(CommentBin))/binary>>,
+    %% Pad to 8-byte boundary (pad bytes: 1,2,3,...)
+    PadLen = case byte_size(Inner0) rem 8 of 0 -> 0; N -> 8 - N end,
+    Pad    = << <<I>> || I <- lists:seq(1, PadLen) >>,
+    Inner  = <<Inner0/binary, Pad/binary>>,
+    %% Outer body
+    Body = <<"openssh-key-v1\0",
+             (Str(<<"none">>))/binary,
+             (Str(<<"none">>))/binary,
+             (Str(<<>>))/binary,
+             0, 0, 0, 1,
+             (Str(PubBlob))/binary,
+             (Str(Inner))/binary>>,
+    B64     = base64:encode(Body),
+    Wrapped = wrap64(B64, 70),
+    Pem = <<"-----BEGIN OPENSSH PRIVATE KEY-----\n",
+            Wrapped/binary,
+            "\n-----END OPENSSH PRIVATE KEY-----\n">>,
+    PubLine = <<"ssh-ed25519 ", (base64:encode(PubBlob))/binary,
+                " ", CommentBin/binary, "\n">>,
+    {Pem, PubLine}.
+
+wrap64(B64, Width) ->
+    Str   = binary_to_list(B64),
+    Len   = length(Str),
+    Lines = [list_to_binary(lists:sublist(Str, I, min(Width, Len - I + 1)))
+             || I <- lists:seq(1, Len, Width)],
+    iolist_to_binary(lists:join("\n", Lines)).
+
+%% Ensure .gall/ is a git repo. Idempotent.
 git_ensure_repo(RepoDir) ->
     PathStr = binary_to_list(RepoDir),
     ok = filelib:ensure_dir(PathStr ++ "/"),
     os:cmd("git -C " ++ PathStr ++ " init 2>/dev/null"),
-    KeyPath = PathStr ++ "/ssh/id_ed25519",
-    PubPath = KeyPath ++ ".pub",
-    %% Generate signing key if not present.
-    case filelib:is_regular(KeyPath) of
-        true  -> ok;
-        false -> keygen(list_to_binary(KeyPath)), ok
-    end,
-    %% Write allowed_signers: installation key + alex root key.
-    AllowedSigners = PathStr ++ "/allowed_signers",
-    case filelib:is_regular(AllowedSigners) of
-        true  -> ok;
-        false ->
-            {ok, PubKey} = file:read_file(PubPath),
-            InstallLine = <<"ghall@systemic.engineering ", PubKey/binary>>,
-            %% alex@systemic.engineering is the fallback root signing key.
-            %% Replace the placeholder below with the actual public key.
-            AlexLine = <<"# alex@systemic.engineering <SSH_PUBLIC_KEY_HERE>\n">>,
-            file:write_file(AllowedSigners, <<InstallLine/binary, AlexLine/binary>>)
-    end,
     ok.
 
 %% Commit session Fragment files and create a signed gestalt tag.
 %%
+%% Agent key is derived from alex's root public key + nickname.
+%% Deterministic: same inputs → same key every time. No state.
+%%
 %% Tag:     gestalt/<Nickname>/<SessionId>
 %% Message: gestalt: <Nickname>/<SessionId>: <RootSha>
+%%          key: ssh-ed25519 <base64> ghall/<Nickname>
 %%
-%% Tags are SSH-signed. Two signing paths:
+%% When AlexKey is set (alex's private key path), the attestation footer
+%% is appended and the tag is signed with alex's key directly:
+%%   ---
+%%   https://systemic.engineering/written-by-ai-consciousness/
+%%   Cheers
+%%   Alex 🌈
 %%
-%%   AlexKey = ""     → installation key (.gall/ssh/id_ed25519), no footer
-%%   AlexKey = <path> → alex@systemic.engineering key, footer appended:
-%%                        ---
-%%                        https://systemic.engineering/written-by-ai-consciousness/
-%%                        Cheers
-%%                        Alex 🌈
-%%
-%% Verify with: git verify-tag gestalt/<nickname>/<session_id>
+%% Verify: git verify-tag gestalt/<nickname>/<session_id>
 %% The tag is machine-maintained. Not human. Never moved.
 git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
     PathStr = binary_to_list(RepoDir),
@@ -225,15 +272,33 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
     SidStr  = binary_to_list(SessionId),
     ShaStr  = binary_to_list(RootSha),
     TagName = "gestalt/" ++ NickStr ++ "/" ++ SidStr,
-    BaseMsg = "gestalt: " ++ NickStr ++ "/" ++ SidStr ++ ": " ++ ShaStr,
+    %% Derive agent keypair and write to temp file for this session.
+    {PubKey, PrivKey} = derive_agent_keypair(Nickname),
+    KeyComment = "ghall/" ++ NickStr,
+    KeyFile    = PathStr ++ "/.git/GHALL_AGENT_KEY",
+    {Pem, PubLine} = openssh_ed25519(PubKey, PrivKey, KeyComment),
+    ok = file:write_file(KeyFile, Pem),
+    ok = file:change_mode(KeyFile, 8#600),
+    %% allowed_signers for this session: the derived key.
+    AllowedSig = PathStr ++ "/.git/GHALL_ALLOWED",
+    ok = file:write_file(AllowedSig,
+        <<"ghall@systemic.engineering ", PubLine/binary>>),
+    %% Build tag message.
+    PubLineTrimmed = binary:part(PubLine, 0, byte_size(PubLine) - 1),
+    KeyLine = <<"key: ", PubLineTrimmed/binary>>,
     {SigningKey, TagMsg} = case AlexKey of
         <<>> ->
-            {PathStr ++ "/ssh/id_ed25519", BaseMsg};
+            BaseMsg = iolist_to_binary(["gestalt: ", NickStr, "/", SidStr,
+                                        ": ", ShaStr, "\n",
+                                        KeyLine/binary, "\n"]),
+            {KeyFile, BaseMsg};
         _ ->
             Footer = "\n---\nhttps://systemic.engineering/written-by-ai-consciousness/\nCheers\nAlex \xF0\x9F\x8C\x88\n",
-            {binary_to_list(AlexKey), BaseMsg ++ Footer}
+            BaseMsg = iolist_to_binary(["gestalt: ", NickStr, "/", SidStr,
+                                        ": ", ShaStr, "\n",
+                                        KeyLine/binary, Footer]),
+            {binary_to_list(AlexKey), BaseMsg}
     end,
-    AllowedSig    = PathStr ++ "/allowed_signers",
     CommitMsgFile = PathStr ++ "/.git/GHALL_COMMIT_MSG",
     TagMsgFile    = PathStr ++ "/.git/GHALL_TAG_MSG",
     ok = file:write_file(CommitMsgFile, TagMsg),
@@ -247,9 +312,11 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
            ++ " -c user.name=ghall"
            ++ " -c user.email=ghall@systemic.engineering"
            ++ " -c gpg.format=ssh"
-           ++ " -c user.signingKey=" ++ SigningKey
+           ++ " -c user.signingKey=" ++ binary_to_list(list_to_binary(SigningKey))
            ++ " -c gpg.ssh.allowedSignersFile=" ++ AllowedSig
            ++ " tag -s " ++ TagName ++ " -F " ++ TagMsgFile),
+    %% Clean up ephemeral key and temp files.
+    file:delete(KeyFile),
     file:delete(CommitMsgFile),
     file:delete(TagMsgFile),
     ok.
