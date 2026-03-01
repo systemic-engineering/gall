@@ -74,6 +74,19 @@ fn receive_event(port: ClaudePort, sock: McpSocket) -> Event
 @external(erlang, "ghall_ffi", "now")
 fn now() -> Int
 
+@external(erlang, "ghall_ffi", "git_ensure_repo")
+fn git_ensure_repo(repo_dir: String) -> Nil
+
+@external(erlang, "ghall_ffi", "git_commit_session")
+fn git_commit_session(
+  repo_dir: String,
+  rel_path: String,
+  nickname: String,
+  session_id: String,
+  root_sha: String,
+  alex_key: String,
+) -> Nil
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -90,6 +103,10 @@ pub type RunConfig {
     work_dir: String,
     /// Path to the claude binary.
     claude_exe: String,
+    /// Path to alex@systemic.engineering's SSH private key for signing.
+    /// When set: tags are signed with this key and carry the attestation footer.
+    /// When empty: tags are signed with the installation key (.gall/ssh/id_ed25519).
+    alex_key: String,
   )
 }
 
@@ -113,7 +130,9 @@ pub fn run(config: RunConfig) -> Nil {
   let _ = setup_signal_handlers()
 
   let sid = session_id()
-  let base = config.work_dir <> "/.ghall/" <> config.nickname <> "/" <> sid
+  let repo_dir = config.work_dir <> "/.gall"
+  let session_rel = config.nickname <> "/" <> sid
+  let base = repo_dir <> "/" <> session_rel
   let store_dir = base <> "/store"
   let sock_path = base <> "/mcp.sock"
   let mcp_config_path = base <> "/mcp.json"
@@ -161,11 +180,20 @@ pub fn run(config: RunConfig) -> Nil {
         None ->
           // Session never committed — partial run, no root to verify
           write_exit_record(base, exit_code, "no-commit")
-        Some(#(root, _sha)) ->
+        Some(#(root, sha)) ->
           case store.verify(root, store_dir) {
             Ok(Nil) -> {
               write_exit_record(base, exit_code, "ok")
-              // TODO: git commit to .mara/gestalt
+              // Commit Fragment files and tag: gestalt/<nickname>/<sid>
+              git_ensure_repo(repo_dir)
+              git_commit_session(
+                repo_dir,
+                session_rel <> "/store",
+                config.nickname,
+                sid,
+                sha,
+                config.alex_key,
+              )
             }
             Error(reason) -> {
               // Tamper detected — build the full violation record and write to store

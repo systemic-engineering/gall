@@ -10,7 +10,9 @@
     set_active/1,
     send_socket/2,
     spawn_claude/2,
-    receive_event/2
+    receive_event/2,
+    git_ensure_repo/1,
+    git_commit_session/6
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -161,3 +163,93 @@ receive_event(Port, Sock) ->
         600_000 ->
             timeout
     end.
+
+%% ---------------------------------------------------------------------------
+%% Git persistence (.gall/gestalt)
+%% ---------------------------------------------------------------------------
+
+%% Ensure .gall/ is a git repo with an SSH signing key.
+%% Idempotent: safe to call on every session.
+%%
+%% Signing key: .gall/ssh/id_ed25519  (ed25519, no passphrase)
+%% Allowed signers: .gall/allowed_signers
+%%   - ghall@systemic.engineering  <installation key>
+%%   - alex@systemic.engineering   <root fallback, shipped with ghall>
+%%
+%% The allowed_signers file is the trust root for git verify-tag.
+git_ensure_repo(RepoDir) ->
+    PathStr = binary_to_list(RepoDir),
+    ok = filelib:ensure_dir(PathStr ++ "/"),
+    os:cmd("git -C " ++ PathStr ++ " init 2>/dev/null"),
+    KeyPath = PathStr ++ "/ssh/id_ed25519",
+    PubPath = KeyPath ++ ".pub",
+    %% Generate signing key if not present.
+    case filelib:is_regular(KeyPath) of
+        true  -> ok;
+        false -> keygen(list_to_binary(KeyPath)), ok
+    end,
+    %% Write allowed_signers: installation key + alex root key.
+    AllowedSigners = PathStr ++ "/allowed_signers",
+    case filelib:is_regular(AllowedSigners) of
+        true  -> ok;
+        false ->
+            {ok, PubKey} = file:read_file(PubPath),
+            InstallLine = <<"ghall@systemic.engineering ", PubKey/binary>>,
+            %% alex@systemic.engineering is the fallback root signing key.
+            %% Replace the placeholder below with the actual public key.
+            AlexLine = <<"# alex@systemic.engineering <SSH_PUBLIC_KEY_HERE>\n">>,
+            file:write_file(AllowedSigners, <<InstallLine/binary, AlexLine/binary>>)
+    end,
+    ok.
+
+%% Commit session Fragment files and create a signed gestalt tag.
+%%
+%% Tag:     gestalt/<Nickname>/<SessionId>
+%% Message: gestalt: <Nickname>/<SessionId>: <RootSha>
+%%
+%% Tags are SSH-signed. Two signing paths:
+%%
+%%   AlexKey = ""     → installation key (.gall/ssh/id_ed25519), no footer
+%%   AlexKey = <path> → alex@systemic.engineering key, footer appended:
+%%                        ---
+%%                        https://systemic.engineering/written-by-ai-consciousness/
+%%                        Cheers
+%%                        Alex 🌈
+%%
+%% Verify with: git verify-tag gestalt/<nickname>/<session_id>
+%% The tag is machine-maintained. Not human. Never moved.
+git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
+    PathStr = binary_to_list(RepoDir),
+    RelStr  = binary_to_list(RelPath),
+    NickStr = binary_to_list(Nickname),
+    SidStr  = binary_to_list(SessionId),
+    ShaStr  = binary_to_list(RootSha),
+    TagName = "gestalt/" ++ NickStr ++ "/" ++ SidStr,
+    BaseMsg = "gestalt: " ++ NickStr ++ "/" ++ SidStr ++ ": " ++ ShaStr,
+    {SigningKey, TagMsg} = case AlexKey of
+        <<>> ->
+            {PathStr ++ "/ssh/id_ed25519", BaseMsg};
+        _ ->
+            Footer = "\n---\nhttps://systemic.engineering/written-by-ai-consciousness/\nCheers\nAlex \xF0\x9F\x8C\x88\n",
+            {binary_to_list(AlexKey), BaseMsg ++ Footer}
+    end,
+    AllowedSig    = PathStr ++ "/allowed_signers",
+    CommitMsgFile = PathStr ++ "/.git/GHALL_COMMIT_MSG",
+    TagMsgFile    = PathStr ++ "/.git/GHALL_TAG_MSG",
+    ok = file:write_file(CommitMsgFile, TagMsg),
+    ok = file:write_file(TagMsgFile, TagMsg),
+    os:cmd("git -C " ++ PathStr ++ " add -- " ++ RelStr),
+    os:cmd("git -C " ++ PathStr
+           ++ " -c user.name=ghall"
+           ++ " -c user.email=ghall@systemic.engineering"
+           ++ " commit -F " ++ CommitMsgFile),
+    os:cmd("git -C " ++ PathStr
+           ++ " -c user.name=ghall"
+           ++ " -c user.email=ghall@systemic.engineering"
+           ++ " -c gpg.format=ssh"
+           ++ " -c user.signingKey=" ++ SigningKey
+           ++ " -c gpg.ssh.allowedSignersFile=" ++ AllowedSig
+           ++ " tag -s " ++ TagName ++ " -F " ++ TagMsgFile),
+    file:delete(CommitMsgFile),
+    file:delete(TagMsgFile),
+    ok.
