@@ -15,7 +15,19 @@
     git_commit_session/6,
     read_config_tag/1,
     write_config_tag/2,
-    send_patch/2
+    send_patch/2,
+    %% Daemon stdio
+    read_line/0,
+    write_line/1,
+    %% Git MCP tools
+    git_status/1,
+    git_diff/2,
+    git_log/3,
+    git_blame/2,
+    git_show_file/3,
+    %% Gestalt resources
+    list_gestalt_sessions/1,
+    read_gestalt_session/2
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -350,6 +362,83 @@ write_config_tag(RepoDir, Contents) ->
     os:cmd("git -C " ++ PathStr ++ " tag -a config -F " ++ MsgFile),
     file:delete(MsgFile),
     ok.
+
+%% ---------------------------------------------------------------------------
+%% Daemon stdio
+%% ---------------------------------------------------------------------------
+
+%% Read one line from stdin (blocking). Strips trailing newline.
+%% Returns {ok, Binary} | eof.
+read_line() ->
+    case io:get_line("") of
+        eof            -> eof;
+        {error, _}     -> eof;
+        Line           ->
+            Trimmed = string:trim(Line, trailing, "\n"),
+            {ok, unicode:characters_to_binary(Trimmed)}
+    end.
+
+%% Write a line to stdout (appends newline).
+write_line(Data) ->
+    io:put_chars(standard_io, [Data, $\n]).
+
+%% ---------------------------------------------------------------------------
+%% Git MCP tools
+%% ---------------------------------------------------------------------------
+
+git_status(Dir) ->
+    unicode:characters_to_binary(
+        os:cmd("git -C " ++ binary_to_list(Dir) ++ " status --short 2>&1")).
+
+git_diff(Dir, Path) ->
+    PathArg = case Path of
+        <<>> -> "";
+        P    -> " -- " ++ binary_to_list(P)
+    end,
+    unicode:characters_to_binary(
+        os:cmd("git -C " ++ binary_to_list(Dir) ++ " diff" ++ PathArg ++ " 2>&1")).
+
+git_log(Dir, Path, N) ->
+    PathArg = case Path of
+        <<>> -> "";
+        P    -> " -- " ++ binary_to_list(P)
+    end,
+    NStr = integer_to_list(N),
+    unicode:characters_to_binary(
+        os:cmd("git -C " ++ binary_to_list(Dir)
+               ++ " log --oneline -n " ++ NStr ++ PathArg ++ " 2>&1")).
+
+git_blame(Dir, Path) ->
+    unicode:characters_to_binary(
+        os:cmd("git -C " ++ binary_to_list(Dir)
+               ++ " blame " ++ binary_to_list(Path) ++ " 2>&1")).
+
+git_show_file(Dir, Ref, Path) ->
+    RefStr = case Ref of
+        <<>> -> "HEAD";
+        R    -> binary_to_list(R)
+    end,
+    unicode:characters_to_binary(
+        os:cmd("git -C " ++ binary_to_list(Dir)
+               ++ " show " ++ RefStr ++ ":" ++ binary_to_list(Path) ++ " 2>&1")).
+
+%% ---------------------------------------------------------------------------
+%% Gestalt resources
+%% ---------------------------------------------------------------------------
+
+%% List gestalt/* tags in the gall repo, newest first.
+%% Returns newline-separated tag names.
+list_gestalt_sessions(GallDir) ->
+    Raw = os:cmd("git -C " ++ binary_to_list(GallDir)
+                 ++ " tag -l 'gestalt/*' --sort=-creatordate 2>/dev/null"),
+    unicode:characters_to_binary(string:trim(Raw)).
+
+%% Read the message body of a specific gestalt tag.
+read_gestalt_session(GallDir, Tag) ->
+    Raw = os:cmd("git -C " ++ binary_to_list(GallDir)
+                 ++ " tag -l " ++ binary_to_list(Tag)
+                 ++ " --format='%(contents)' 2>/dev/null"),
+    unicode:characters_to_binary(string:trim(Raw)).
 
 %% ---------------------------------------------------------------------------
 %% Sync — send session patch
