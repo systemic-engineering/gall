@@ -12,7 +12,8 @@
     spawn_claude/2,
     receive_event/2,
     git_ensure_repo/1,
-    git_commit_session/6,
+    git_current_branch/1,
+    git_commit_session/7,
     read_config_tag/1,
     write_config_tag/2,
     send_patch/2,
@@ -265,31 +266,34 @@ git_ensure_repo(RepoDir) ->
     os:cmd("git -C " ++ PathStr ++ " init 2>/dev/null"),
     ok.
 
-%% Commit session Fragment files and create a signed gestalt tag.
+%% Return the current branch name (abbrev-ref HEAD).
+%% Returns "HEAD" if in detached-HEAD state.
+git_current_branch(RepoDir) ->
+    Raw = os:cmd("git -C " ++ binary_to_list(RepoDir)
+                 ++ " rev-parse --abbrev-ref HEAD 2>/dev/null"),
+    unicode:characters_to_binary(string:trim(Raw)).
+
+%% Commit session Fragment files and create a signed session tag.
 %%
-%% Agent key is derived from alex's root public key + nickname.
-%% Deterministic: same inputs → same key every time. No state.
-%%
-%% Tag:     gestalt/<Nickname>/<SessionId>
-%% Message: gestalt: <Nickname>/<SessionId>: <RootSha>
+%% Tag:     <TagName>  (e.g. sessions/main/mara/1737842315)
+%% Message: session: <TagName>: <RootSha>
 %%          key: ssh-ed25519 <base64> gall/<Nickname>
 %%
-%% When AlexKey is set (alex's private key path), the attestation footer
-%% is appended and the tag is signed with alex's key directly:
+%% When AlexKey is set, the attestation footer is appended:
 %%   ---
 %%   https://systemic.engineering/written-by-ai-consciousness/
 %%   Cheers
 %%   Alex 🌈
 %%
-%% Verify: git verify-tag gestalt/<nickname>/<session_id>
-%% The tag is machine-maintained. Not human. Never moved.
-git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
-    PathStr = binary_to_list(RepoDir),
-    RelStr  = binary_to_list(RelPath),
-    NickStr = binary_to_list(Nickname),
-    SidStr  = binary_to_list(SessionId),
-    ShaStr  = binary_to_list(RootSha),
-    TagName = "gestalt/" ++ NickStr ++ "/" ++ SidStr,
+%% Verify: git verify-tag <TagName>
+%% Machine-maintained. Never moved.
+git_commit_session(RepoDir, RelPath, Nickname, SessionId, TagName, RootSha, AlexKey) ->
+    PathStr  = binary_to_list(RepoDir),
+    RelStr   = binary_to_list(RelPath),
+    NickStr  = binary_to_list(Nickname),
+    _SidStr  = binary_to_list(SessionId),
+    ShaStr   = binary_to_list(RootSha),
+    TagStr   = binary_to_list(TagName),
     %% Derive agent keypair and write to temp file for this session.
     {PubKey, PrivKey} = derive_agent_keypair(Nickname),
     KeyComment = "gall/" ++ NickStr,
@@ -307,13 +311,13 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
     KeyLine = <<"key: ", PubLineTrimmed/binary>>,
     {SigningKey, TagMsg} = case AlexKey of
         <<>> ->
-            BaseMsg = iolist_to_binary(["gestalt: ", NickStr, "/", SidStr,
+            BaseMsg = iolist_to_binary(["session: ", TagStr,
                                         ": ", ShaStr, "\n",
                                         KeyLine/binary, "\n"]),
             {KeyFile, BaseMsg};
         _ ->
             Footer = "\n---\nhttps://systemic.engineering/written-by-ai-consciousness/\nCheers\nAlex \xF0\x9F\x8C\x88\n",
-            BaseMsg = iolist_to_binary(["gestalt: ", NickStr, "/", SidStr,
+            BaseMsg = iolist_to_binary(["session: ", TagStr,
                                         ": ", ShaStr, "\n",
                                         KeyLine/binary, Footer]),
             {binary_to_list(AlexKey), BaseMsg}
@@ -334,7 +338,7 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, RootSha, AlexKey) ->
            ++ " -c gpg.format=ssh"
            ++ " -c user.signingKey=" ++ binary_to_list(list_to_binary(SigningKey))
            ++ " -c gpg.ssh.allowedSignersFile=" ++ AllowedSig
-           ++ " tag -s " ++ TagName ++ " -F " ++ TagMsgFile),
+           ++ " tag -s " ++ TagStr ++ " -F " ++ TagMsgFile),
     %% Clean up ephemeral key and temp files.
     file:delete(KeyFile),
     file:delete(CommitMsgFile),

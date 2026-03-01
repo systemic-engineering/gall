@@ -77,12 +77,16 @@ fn read_gestalt_session_ffi(gall_dir: String, tag: String) -> String
 @external(erlang, "gall_ffi", "git_ensure_repo")
 fn git_ensure_repo(repo_dir: String) -> Nil
 
+@external(erlang, "gall_ffi", "git_current_branch")
+fn git_current_branch(repo_dir: String) -> String
+
 @external(erlang, "gall_ffi", "git_commit_session")
 fn git_commit_session(
   repo_dir: String,
   rel_path: String,
   nickname: String,
   session_id: String,
+  tag_name: String,
   root_sha: String,
   alex_key: String,
 ) -> Nil
@@ -106,6 +110,7 @@ pub type SessionState {
     session: session.Session,
     store_dir: String,
     session_rel: String,
+    tag_name: String,
     nickname: String,
     sid: String,
   )
@@ -223,8 +228,9 @@ fn handle_initialize(
   let session_config = session.SessionConfig(author: author, name: "gall-session")
   let s = session.new(session_config)
   let sid = session_id()
-
-  let session_rel = nickname <> "/" <> sid
+  let branch = normalize_branch(git_current_branch(state.work_dir))
+  let session_rel = "sessions/" <> branch <> "/" <> nickname <> "/" <> sid
+  let tag_name = session_rel
   let base = state.gall_dir <> "/" <> session_rel
   let store_dir = base <> "/store"
   let _ = simplifile.create_directory_all(store_dir)
@@ -236,6 +242,7 @@ fn handle_initialize(
       session: s,
       store_dir:,
       session_rel:,
+      tag_name:,
       nickname:,
       sid:,
     )
@@ -416,6 +423,7 @@ fn call_commit(
       session: s,
       store_dir: sd,
       session_rel: sr,
+      tag_name: tn,
       nickname: nick,
       sid:,
     ) -> {
@@ -445,6 +453,7 @@ fn call_commit(
             sr <> "/store",
             nick,
             sid,
+            tn,
             sha,
             state.alex_key,
           )
@@ -455,7 +464,7 @@ fn call_commit(
             False -> Nil
           }
 
-          let tag = "gestalt/" <> nick <> "/" <> sid
+          let tag = tn
           let next_state = State(..state, sess: Idle)
           #(
             next_state,
@@ -665,6 +674,10 @@ fn resource_templates_json() -> String {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn normalize_branch(branch: String) -> String {
+  string.replace(branch, "/", "-")
+}
 
 fn shas_to_frags(
   s: session.Session,

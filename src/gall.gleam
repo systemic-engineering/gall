@@ -78,12 +78,16 @@ fn now() -> Int
 @external(erlang, "gall_ffi", "git_ensure_repo")
 fn git_ensure_repo(repo_dir: String) -> Nil
 
+@external(erlang, "gall_ffi", "git_current_branch")
+fn git_current_branch(repo_dir: String) -> String
+
 @external(erlang, "gall_ffi", "git_commit_session")
 fn git_commit_session(
   repo_dir: String,
   rel_path: String,
   nickname: String,
   session_id: String,
+  tag_name: String,
   root_sha: String,
   alex_key: String,
 ) -> Nil
@@ -138,7 +142,8 @@ pub fn run(config: RunConfig) -> Nil {
 
   let sid = session_id()
   let repo_dir = config.work_dir <> "/.gall"
-  let session_rel = config.nickname <> "/" <> sid
+  let branch = normalize_branch(git_current_branch(config.work_dir))
+  let session_rel = "sessions/" <> branch <> "/" <> config.nickname <> "/" <> sid
   let base = repo_dir <> "/" <> session_rel
   let store_dir = base <> "/store"
   let sock_path = base <> "/mcp.sock"
@@ -193,11 +198,13 @@ pub fn run(config: RunConfig) -> Nil {
               write_exit_record(base, exit_code, "ok")
               // Commit Fragment files and tag: gestalt/<nickname>/<sid>
               git_ensure_repo(repo_dir)
+              let tag_name = session_rel
               git_commit_session(
                 repo_dir,
                 session_rel <> "/store",
                 config.nickname,
                 sid,
+                tag_name,
                 sha,
                 config.alex_key,
               )
@@ -500,6 +507,10 @@ fn dir_of(path: String) -> String {
       |> list_drop_last
       |> string.join("/")
   }
+}
+
+fn normalize_branch(branch: String) -> String {
+  string.replace(branch, "/", "-")
 }
 
 fn list_drop_last(lst: List(a)) -> List(a) {
