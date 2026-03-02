@@ -1,6 +1,6 @@
 /// Session: ADO state for a witnessed AI session.
 ///
-/// An agent runs with gall wired. Each call — act, decide, observe —
+/// An agent runs with cairn wired. Each call — act, decide, observe —
 /// materializes a Fragment node. commit seals the session and returns
 /// the root Fragment and its SHA. Same inputs, same hash. Content-addressed.
 ///
@@ -24,7 +24,7 @@ import gleam/option.{type Option, None, Some}
 // FFI
 // ---------------------------------------------------------------------------
 
-@external(erlang, "gall_ffi", "now")
+@external(erlang, "cairn_ffi", "now")
 fn now() -> Int
 
 // ---------------------------------------------------------------------------
@@ -112,17 +112,19 @@ pub fn act(
 }
 
 /// Record a decision linked to an observation (by ObsRef), wrapping act fragments.
+/// annotation: signal kind (goes into Witnessed.message, what drain filters on)
 /// rule: the structural conclusion (e.g. "RequiredSection: fn:fragment")
 /// acts: the Act-layer Fragments that this decision produced.
 /// Returns updated session and a DecRef.
 pub fn decide(
   session: Session,
+  annotation: String,
   obs_ref: Ref,
   rule: String,
   acts: List(fragmentation.Fragment),
 ) -> #(Session, Ref) {
   let obs_sha = ref_sha(obs_ref)
-  let w = witnessed(session.config, "decide: " <> obs_sha)
+  let w = witnessed(session.config, annotation)
   let children_sha =
     list.map(acts, fragmentation.hash_fragment)
     |> list.fold("", fn(acc, h) { acc <> h })
@@ -145,17 +147,19 @@ pub fn decide(
 }
 
 /// Record an observation, wrapping decision fragments.
+/// annotation: signal kind (goes into Witnessed.message, what drain filters on)
 /// ref: source location — "file:path.gleam", "concept:fn:fragment", etc.
 /// data: what was observed.
 /// decisions: the Decide-layer Fragments that this observation produced.
 /// Returns updated session and an ObsRef.
 pub fn observe(
   session: Session,
+  annotation: String,
   ref: String,
   data: String,
   decisions: List(fragmentation.Fragment),
 ) -> #(Session, Ref) {
-  let w = witnessed(session.config, "observe: " <> ref)
+  let w = witnessed(session.config, annotation)
   let children_sha =
     list.map(decisions, fragmentation.hash_fragment)
     |> list.fold("", fn(acc, h) { acc <> h })
@@ -178,13 +182,15 @@ pub fn observe(
 }
 
 /// Seal the session. observations: the top-level Observe Fragments.
+/// annotation: signal kind (goes into Witnessed.message, what drain filters on)
 /// Returns #(Session, root_fragment, root_sha). Root Fragment is not dropped.
 pub fn commit(
   session: Session,
+  annotation: String,
   observations: List(fragmentation.Fragment),
 ) -> #(Session, fragmentation.Fragment, String) {
   let name = session.config.name
-  let w = witnessed(session.config, "commit: " <> name)
+  let w = witnessed(session.config, annotation)
   let children_sha =
     list.map(observations, fragmentation.hash_fragment)
     |> list.fold("", fn(acc, h) { acc <> h })
@@ -236,7 +242,7 @@ pub fn ref_sha(r: Ref) -> String {
 fn witnessed(config: SessionConfig, message: String) -> fragmentation.Witnessed {
   fragmentation.witnessed(
     fragmentation.Author(config.author),
-    fragmentation.Committer("gall"),
+    fragmentation.Committer("cairn"),
     fragmentation.Timestamp(int.to_string(now())),
     fragmentation.Message(message),
   )

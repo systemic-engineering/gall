@@ -1,10 +1,10 @@
--module(gall_trace_ffi).
+-module(cairn_trace_ffi).
 -export([execute/3]).
 
 %% Telemetry emission. Attempts to call telemetry:execute/3 if the
 %% telemetry application is available. Falls back to a no-op.
 %%
-%% Event: list of binaries (e.g. [<<"gall">>, <<"tool">>, <<"call">>])
+%% Event: list of binaries (e.g. [<<"cairn">>, <<"tool">>, <<"call">>])
 %% Name: tool name binary
 %% Meta: Gleam Metadata record (opaque — passed through to telemetry as-is)
 

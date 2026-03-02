@@ -1,8 +1,8 @@
-name = "gall"
+name = "cairn"
 version = "0.1.0"
-description = "gall — tamper-proof witnessed agent work. In git. The audacity."
+description = "cairn — content-addressed witnessed agent work. Stones stacked to mark I was here."
 licences = ["Apache-2.0"]
-repository = { type = "github", user = "systemic-engineering", repo = "gall" }
+repository = { type = "github", user = "systemic-engineering", repo = "cairn" }
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
@@ -10,6 +10,7 @@ gleam_erlang = ">= 0.25.0 and < 2.0.0"
 thoas = ">= 0.4.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 fragmentation = ">= 0.1.0 and < 1.0.0"
+bias = { path = "../bias" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

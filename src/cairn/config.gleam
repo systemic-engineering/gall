@@ -1,6 +1,6 @@
-/// Gall session config.
+/// Cairn session config.
 ///
-/// Stored as an annotated git tag in .gall/:
+/// Stored as an annotated git tag in .cairn/:
 ///   git tag -a config -m "sync = true\nsync.remote = garden@systemic.engineering"
 ///
 /// sync          — send patch after each witnessed session (default: false)

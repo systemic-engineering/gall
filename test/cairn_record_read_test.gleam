@@ -1,4 +1,4 @@
-import gall/session
+import cairn/session
 import gleeunit/should
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ pub fn act_advances_head_test() {
   session.head(s) |> should.equal("")
 
   // After act, head should be non-empty (the SHA of the new fragment)
-  let #(s2, ref) = session.act(s, "@read", "file: src/gall/tools.gleam")
+  let #(s2, ref) = session.act(s, "@read", "file: src/cairn/tools.gleam")
   let sha = session.ref_sha(ref)
   session.head(s2) |> should.equal(sha)
   session.head(s2) |> should.not_equal("")

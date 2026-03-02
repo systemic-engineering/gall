@@ -1,12 +1,12 @@
-/// Gall: tamper-proof witnessed agent work. In git. The audacity.
+/// Cairn: tamper-proof witnessed agent work. Stones stacked to mark "I was here."
 ///
-/// gall spawns claude. Not the other way around.
-/// gall provides the infrastructure for observation.
+/// cairn spawns claude. Not the other way around.
+/// cairn provides the infrastructure for observation.
 ///
-/// What gall does:
+/// What cairn does:
 ///   1. Start a unix socket MCP server.
 ///   2. Write an MCP config pointing at the socket.
-///   3. Spawn claude with that config — claude calls gall's tools.
+///   3. Spawn claude with that config — claude calls cairn's tools.
 ///   4. Capture claude's stdout line by line as thought Shards.
 ///      Written to disk the moment they arrive.
 ///   5. Handle MCP tool calls (observe/decide/act/commit).
@@ -21,10 +21,10 @@
 /// That's what makes it witnessing, not logging.
 import fragmentation
 import fragmentation/walk
-import gall/config as gall_config
-import gall/mcp
-import gall/session
-import gall/store
+import cairn/config as cairn_config
+import cairn/mcp
+import cairn/session
+import cairn/store
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -48,41 +48,41 @@ pub type Event {
   Killed
 }
 
-@external(erlang, "gall_ffi", "session_id")
+@external(erlang, "cairn_ffi", "session_id")
 fn session_id() -> String
 
-@external(erlang, "gall_ffi", "setup_signal_handlers")
+@external(erlang, "cairn_ffi", "setup_signal_handlers")
 fn setup_signal_handlers() -> Nil
 
-@external(erlang, "gall_ffi", "start_unix_socket")
+@external(erlang, "cairn_ffi", "start_unix_socket")
 fn start_unix_socket(path: String) -> Result(McpSocket, String)
 
-@external(erlang, "gall_ffi", "accept_client")
+@external(erlang, "cairn_ffi", "accept_client")
 fn accept_client(listen_sock: McpSocket) -> Result(McpSocket, String)
 
-@external(erlang, "gall_ffi", "set_active")
+@external(erlang, "cairn_ffi", "set_active")
 fn set_active(sock: McpSocket) -> Nil
 
-@external(erlang, "gall_ffi", "send_socket")
+@external(erlang, "cairn_ffi", "send_socket")
 fn send_socket(sock: McpSocket, data: String) -> Nil
 
-@external(erlang, "gall_ffi", "spawn_claude")
+@external(erlang, "cairn_ffi", "spawn_claude")
 fn spawn_claude(
   exe: String,
   args: List(String),
   env: List(#(String, String)),
 ) -> ClaudePort
 
-@external(erlang, "gall_ffi", "receive_event")
+@external(erlang, "cairn_ffi", "receive_event")
 fn receive_event(port: ClaudePort, sock: McpSocket) -> Event
 
-@external(erlang, "gall_ffi", "now")
+@external(erlang, "cairn_ffi", "now")
 fn now() -> Int
 
-@external(erlang, "gall_ffi", "git_current_branch")
+@external(erlang, "cairn_ffi", "git_current_branch")
 fn git_current_branch(repo_dir: String) -> String
 
-@external(erlang, "gall_ffi", "git_commit_session")
+@external(erlang, "cairn_ffi", "git_commit_session")
 fn git_commit_session(
   repo_dir: String,
   rel_path: String,
@@ -93,10 +93,10 @@ fn git_commit_session(
   alex_key: String,
 ) -> Nil
 
-@external(erlang, "gall_ffi", "read_config_tag")
+@external(erlang, "cairn_ffi", "read_config_tag")
 fn read_config_tag(repo_dir: String) -> String
 
-@external(erlang, "gall_ffi", "send_patch")
+@external(erlang, "cairn_ffi", "send_patch")
 fn send_patch(repo_dir: String, remote: String) -> Nil
 
 // ---------------------------------------------------------------------------
@@ -111,13 +111,13 @@ pub type RunConfig {
     prompt: String,
     /// The model identifier (e.g. "claude-sonnet-4-6").
     model: String,
-    /// Root directory for .gall/ storage. Usually the project working dir.
+    /// Root directory for .cairn/ storage. Usually the project working dir.
     work_dir: String,
     /// Path to the claude binary.
     claude_exe: String,
     /// Path to alex@systemic.engineering's SSH private key for signing.
     /// When set: tags are signed with this key and carry the attestation footer.
-    /// When empty: tags are signed with the installation key (.gall/ssh/id_ed25519).
+    /// When empty: tags are signed with the installation key (.cairn/ssh/id_ed25519).
     alex_key: String,
   )
 }
@@ -142,17 +142,17 @@ pub fn run(config: RunConfig) -> Nil {
   let _ = setup_signal_handlers()
 
   let sid = session_id()
-  let gall_dir = config.work_dir <> "/.gall"
+  let cairn_dir = config.work_dir <> "/.cairn"
   let branch = normalize_branch(git_current_branch(config.work_dir))
   let session_rel =
     "actors/" <> config.nickname <> "/worktrees/" <> branch <> "/" <> sid
-  let tag_name = "gall/" <> branch <> "/" <> config.nickname <> "/" <> sid
-  let base = gall_dir <> "/" <> session_rel
+  let tag_name = "cairn/" <> branch <> "/" <> config.nickname <> "/" <> sid
+  let base = cairn_dir <> "/" <> session_rel
   let store_dir = base <> "/store"
   let sock_path = base <> "/mcp.sock"
   let mcp_config_path = base <> "/mcp.json"
 
-  // Create store directory (no git init — project git tracks .gall/ as plain files)
+  // Create store directory (no git init — project git tracks .cairn/ as plain files)
   let _ = simplifile.create_directory_all(store_dir)
 
   // Start unix socket listener
@@ -162,13 +162,13 @@ pub fn run(config: RunConfig) -> Nil {
   write_mcp_config(mcp_config_path, sock_path)
 
   // Spawn claude — it connects back to our socket.
-  // GALL_WORKTREE and GALL_BRANCH are set so any daemon spawned by the agent
+  // CAIRN_WORKTREE and CAIRN_BRANCH are set so any daemon spawned by the agent
   // (e.g. via MCP config) knows which worktree and branch it's operating on.
   let port =
     spawn_claude(
       config.claude_exe,
       ["--mcp-config", mcp_config_path, "-p", config.prompt],
-      [#("GALL_WORKTREE", config.work_dir), #("GALL_BRANCH", branch)],
+      [#("CAIRN_WORKTREE", config.work_dir), #("CAIRN_BRANCH", branch)],
     )
 
   // Accept the MCP connection from claude
@@ -182,7 +182,7 @@ pub fn run(config: RunConfig) -> Nil {
   let #(final_mcp_state, exit_code) =
     event_loop(mcp_state, port, conn_sock, store_dir, [])
 
-  // If gall was killed by a signal, record it before doing anything else.
+  // If cairn was killed by a signal, record it before doing anything else.
   // exit_code -2 = killed. Write @killed to store so it travels into .gestalt.
   case exit_code == -2 {
     True -> {
@@ -200,12 +200,12 @@ pub fn run(config: RunConfig) -> Nil {
           case store.verify(root, store_dir) {
             Ok(Nil) -> {
               write_exit_record(base, exit_code, "ok")
-              // Commit .gall/sessions/... into the project's own git.
-              // .gall/ is plain files — no nested git repo.
-              let _ = simplifile.create_directory_all(gall_dir)
+              // Commit .cairn/sessions/... into the project's own git.
+              // .cairn/ is plain files — no nested git repo.
+              let _ = simplifile.create_directory_all(cairn_dir)
               git_commit_session(
                 config.work_dir,
-                ".gall/" <> session_rel <> "/store",
+                ".cairn/" <> session_rel <> "/store",
                 config.nickname,
                 sid,
                 tag_name,
@@ -213,7 +213,7 @@ pub fn run(config: RunConfig) -> Nil {
                 config.alex_key,
               )
               // Sync if enabled in config tag
-              let sync_cfg = gall_config.parse(read_config_tag(config.work_dir))
+              let sync_cfg = cairn_config.parse(read_config_tag(config.work_dir))
               case sync_cfg.sync {
                 True -> send_patch(config.work_dir, sync_cfg.sync_remote)
                 False -> Nil
@@ -264,16 +264,13 @@ fn event_loop(
       case string.is_empty(line) {
         True -> event_loop(mcp_state, port, sock, store_dir, thought_acc)
         False -> {
-          let #(next_state, maybe_response, maybe_frag) =
+          let #(next_state, maybe_response, frags) =
             mcp.handle(mcp_state, line)
-          // Write the new Fragment to disk immediately
-          case maybe_frag {
-            None -> Nil
-            Some(frag) -> {
-              let _ = store.write(frag, store_dir)
-              Nil
-            }
-          }
+          // Write new Fragments to disk immediately
+          list.each(frags, fn(frag) {
+            let _ = store.write(frag, store_dir)
+            Nil
+          })
           // Send response back to claude
           case maybe_response {
             None -> Nil
@@ -317,7 +314,7 @@ fn thought_shard(chunk: String, mcp_state: mcp.State) -> fragmentation.Fragment 
   let w =
     fragmentation.witnessed(
       fragmentation.Author(author),
-      fragmentation.Committer("gall"),
+      fragmentation.Committer("cairn"),
       fragmentation.Timestamp(ts),
       fragmentation.Message("@thoughts"),
     )
@@ -325,7 +322,7 @@ fn thought_shard(chunk: String, mcp_state: mcp.State) -> fragmentation.Fragment 
   fragmentation.shard(r, w, chunk)
 }
 
-/// Record that gall itself was killed by an OS signal.
+/// Record that cairn itself was killed by an OS signal.
 /// The session was running. Someone or something sent SIGTERM/SIGHUP.
 /// Written to store so it travels into .gestalt regardless of session state.
 fn killed_shard(mcp_state: mcp.State) -> fragmentation.Fragment {
@@ -340,12 +337,12 @@ fn killed_shard(mcp_state: mcp.State) -> fragmentation.Fragment {
   let w =
     fragmentation.witnessed(
       fragmentation.Author(author),
-      fragmentation.Committer("gall"),
+      fragmentation.Committer("cairn"),
       fragmentation.Timestamp(ts),
       fragmentation.Message("@killed"),
     )
   let r = fragmentation.ref(fragmentation.hash(ts <> "@killed"), "killed")
-  fragmentation.shard(r, w, "@killed: gall received SIGTERM or SIGHUP")
+  fragmentation.shard(r, w, "@killed: cairn received SIGTERM or SIGHUP")
 }
 
 /// Build a full @violation Fragment.
@@ -353,7 +350,7 @@ fn killed_shard(mcp_state: mcp.State) -> fragmentation.Fragment {
 /// Contains:
 ///   - prompt and model (the full execution context)
 ///   - session identity (author, session id)
-///   - recorded root SHA (what gall held in memory)
+///   - recorded root SHA (what cairn held in memory)
 ///   - findings: a Fragment whose children are one Shard per node in the
 ///     recorded tree, each describing what was actually found on disk:
 ///     "<sha>: present | missing | tampered\nexpected:...\nfound:..."
@@ -447,7 +444,7 @@ fn meta_shard(key: String, value: String, ts: String) -> fragmentation.Fragment 
 fn violation_witnessed(ts: String, msg: String) -> fragmentation.Witnessed {
   fragmentation.witnessed(
     fragmentation.Author("violation@systemic.engineering"),
-    fragmentation.Committer("gall"),
+    fragmentation.Committer("cairn"),
     fragmentation.Timestamp(ts),
     fragmentation.Message(msg),
   )
@@ -471,7 +468,7 @@ fn get_session_root(
 /// Write an MCP config JSON file telling claude where the socket is.
 fn write_mcp_config(path: String, sock_path: String) -> Nil {
   let config =
-    "{\"mcpServers\":{\"gall\":{\"type\":\"socket\",\"path\":\""
+    "{\"mcpServers\":{\"cairn\":{\"type\":\"socket\",\"path\":\""
     <> sock_path
     <> "\"}}}"
   let _ = simplifile.create_directory_all(dir_of(path))

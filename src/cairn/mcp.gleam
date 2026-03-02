@@ -1,25 +1,25 @@
-/// Gall MCP protocol handler.
+/// Cairn MCP protocol handler.
 ///
 /// Transport-agnostic. Parses JSON-RPC, dispatches tools, returns:
 ///   - the next state
 ///   - the JSON response string to send (None = notification, no reply)
 ///   - the newly created Fragment (None = no Fragment this call)
 ///
-/// The orchestrator (gall.gleam) owns the socket I/O and disk writes.
+/// The orchestrator (cairn.gleam) owns the socket I/O and disk writes.
 /// It calls handle/2 on each incoming message and acts on the outputs.
 ///
 /// Protocol:
 ///   client → initialize(clientInfo.name = nickname)
 ///   server → capabilities + tool list
 ///   client → tools/call: observe | decide | act | commit
-///   client exits → gall verifies store + commits session
+///   client exits → cairn verifies store + commits session
 ///
 /// The nickname from initialize becomes Author("<nickname>@systemic.engineering")
 /// on every Fragment in the session. Identity is a protocol requirement.
 import fragmentation
-import gall/json
-import gall/session
-import gall/tools
+import cairn/json
+import cairn/session
+import cairn/tools
 import gleam/dynamic
 import gleam/int
 import gleam/list
@@ -48,23 +48,23 @@ pub type State {
 pub fn handle(
   state: State,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let method = extract_field(json, "method")
   let id = extract_field(json, "id")
 
   case method {
     "initialize" -> handle_initialize(state, id, json)
-    "notifications/initialized" -> #(state, None, None)
+    "notifications/initialized" -> #(state, None, [])
     "tools/list" -> #(
       state,
       Some(make_response(id, tools.mcp_tools_json())),
-      None,
+      [],
     )
     "tools/call" -> handle_tool_call(state, id, json)
     _ -> #(
       state,
       Some(make_error(id, -32_601, "method not found: " <> method)),
-      None,
+      [],
     )
   }
 }
@@ -77,16 +77,16 @@ fn handle_initialize(
   state: State,
   id: String,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let nickname = extract_nested(json, "clientInfo", "name")
   let client_version = extract_nested(json, "clientInfo", "version")
   let protocol_version = extract_field(json, "protocolVersion")
   let author = nickname <> "@systemic.engineering"
-  let config = session.SessionConfig(author: author, name: "gall-session")
+  let config = session.SessionConfig(author: author, name: "cairn-session")
   let s = session.new(config)
 
   // Record session provenance as a @meta Fragment — written to store immediately.
-  // Everything gall knows at the moment the agent connected.
+  // Everything cairn knows at the moment the agent connected.
   let meta = meta_fragment(author, client_version, protocol_version)
 
   let response =
@@ -94,12 +94,12 @@ fn handle_initialize(
       id,
       "{\"protocolVersion\":\"2024-11-05\","
         <> "\"capabilities\":{\"tools\":{}},"
-        <> "\"serverInfo\":{\"name\":\"gall\",\"version\":\"0.1.0\"}}",
+        <> "\"serverInfo\":{\"name\":\"cairn\",\"version\":\"0.1.0\"}}",
     )
 
   case state {
-    Uninitialized -> #(Ready(session: s), Some(response), Some(meta))
-    Ready(_) -> #(Ready(session: s), Some(response), Some(meta))
+    Uninitialized -> #(Ready(session: s), Some(response), [meta])
+    Ready(_) -> #(Ready(session: s), Some(response), [meta])
   }
 }
 
@@ -114,7 +114,7 @@ fn meta_fragment(
   let w =
     fragmentation.witnessed(
       fragmentation.Author(author),
-      fragmentation.Committer("gall"),
+      fragmentation.Committer("cairn"),
       fragmentation.Timestamp("0"),
       fragmentation.Message("@meta"),
     )
@@ -133,12 +133,12 @@ fn handle_tool_call(
   state: State,
   id: String,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   case state {
     Uninitialized -> #(
       state,
       Some(make_error(id, -32_002, "not initialized")),
-      None,
+      [],
     )
     Ready(s) -> {
       let name = extract_nested(json, "params", "name")
@@ -147,14 +147,14 @@ fn handle_tool_call(
         Error(_) -> #(
           state,
           Some(make_response(id, content_text(err_json("invalid args json")))),
-          None,
+          [],
         )
         Ok(args) -> {
-          let #(next_s, result_json, maybe_frag) = call_tool(s, name, args)
+          let #(next_s, result_json, frags) = call_tool(s, name, args)
           #(
             Ready(session: next_s),
             Some(make_response(id, content_text(result_json))),
-            maybe_frag,
+            frags,
           )
         }
       }
@@ -166,88 +166,172 @@ fn call_tool(
   s: session.Session,
   name: String,
   args: dynamic.Dynamic,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
   case name {
-    "act" -> tool_act(s, args)
-    "decide" -> tool_decide(s, args)
-    "observe" -> tool_observe(s, args)
+    "bias" -> tool_bias(s, args)
     "commit" -> tool_commit(s, args)
-    _ -> #(s, err_json("unknown tool: " <> name), None)
+    _ -> #(s, err_json("unknown tool: " <> name), [])
   }
 }
 
-fn tool_act(
+/// Bias tool: ODA with cascading constraint.
+/// observation is always required.
+/// action requires decision requires observation.
+fn tool_bias(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
+  // Extract top-level annotation
   case json.get_string(args, "annotation") {
-    Error(Nil) -> #(s, err_json("act requires annotation"), None)
+    Error(Nil) -> #(s, err_json("bias requires annotation"), [])
     Ok(annotation) -> {
-      let data = result.unwrap(json.get_string(args, "data"), "")
-      let #(s2, ref) = session.act(s, annotation, data)
-      let sha = session.ref_sha(ref)
-      let frags = session.fragments_for_ref(s2, ref)
-      let frag = list.first(frags) |> result.unwrap(dummy_shard())
-      #(s2, "{\"act_sha\":\"" <> sha <> "\"}", Some(frag))
-    }
-  }
-}
-
-fn tool_decide(
-  s: session.Session,
-  args: dynamic.Dynamic,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
-  case json.get_string(args, "rule") {
-    Error(Nil) -> #(s, err_json("decide requires rule"), None)
-    Ok(rule) -> {
-      // obs_sha: defaults to HEAD — the most recent Fragment in the session.
-      // The agent doesn't need to know where they are; gall does.
-      let obs_sha = case json.get_string(args, "obs_sha") {
-        Ok(sha) if sha != "" -> sha
-        _ -> session.head(s)
+      // Extract nested observation object
+      let obs_str = extract_object_field(args, "observation")
+      case json.decode(obs_str) {
+        Error(_) -> #(s, err_json("bias requires observation"), [])
+        Ok(obs_obj) -> {
+          case
+            json.get_string(obs_obj, "ref"),
+            json.get_string(obs_obj, "payload")
+          {
+            Ok(obs_ref), Ok(obs_payload) ->
+              build_bias(s, annotation, obs_ref, obs_payload, args)
+            _, _ -> #(
+              s,
+              err_json("observation requires ref and payload"),
+              [],
+            )
+          }
+        }
       }
-      let obs_ref = session.ObsRef(sha: obs_sha)
-      let act_shas = result.unwrap(json.get_list(args, "acts"), [])
-      let acts = shas_to_fragments(s, list.map(act_shas, session.ActRef))
-      let #(s2, ref) = session.decide(s, obs_ref, rule, acts)
-      let sha = session.ref_sha(ref)
-      let frags = session.fragments_for_ref(s2, ref)
-      let frag = list.first(frags) |> result.unwrap(dummy_shard())
-      #(s2, "{\"dec_sha\":\"" <> sha <> "\"}", Some(frag))
     }
   }
 }
 
-fn tool_observe(
+/// Build bias ADO bottom-up: act first, then decide wrapping acts,
+/// then observe wrapping decisions. Collect all fragments.
+fn build_bias(
   s: session.Session,
+  annotation: String,
+  obs_ref_str: String,
+  obs_payload: String,
   args: dynamic.Dynamic,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
-  case json.get_string(args, "ref"), json.get_string(args, "data") {
-    Ok(ref), Ok(data) -> {
-      let dec_shas = result.unwrap(json.get_list(args, "decisions"), [])
-      let decisions = shas_to_fragments(s, list.map(dec_shas, session.DecRef))
-      let #(s2, obs_ref) = session.observe(s, ref, data, decisions)
-      let sha = session.ref_sha(obs_ref)
-      let frags = session.fragments_for_ref(s2, obs_ref)
-      let frag = list.first(frags) |> result.unwrap(dummy_shard())
-      #(s2, "{\"obs_sha\":\"" <> sha <> "\"}", Some(frag))
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
+  // Check for action and decision
+  let has_decision = has_object_field(args, "decision")
+  let has_action = has_object_field(args, "action")
+
+  // Cascading constraint: action requires decision
+  case has_action && !has_decision {
+    True -> #(s, err_json("action requires decision"), [])
+    False -> {
+      // Build bottom-up: act → decide → observe
+      let #(s2, act_frags, act_shas) = case has_action {
+        False -> #(s, [], [])
+        True -> {
+          let act_str = extract_object_field(args, "action")
+          case json.decode(act_str) {
+            Error(_) -> #(s, [], [])
+            Ok(act_obj) -> {
+              let act_annotation =
+                result.unwrap(json.get_string(act_obj, "annotation"), annotation)
+              let act_payload =
+                result.unwrap(json.get_string(act_obj, "payload"), "")
+              let #(s_a, act_ref) =
+                session.act(s, act_annotation, act_payload)
+              let sha = session.ref_sha(act_ref)
+              let frags = session.fragments_for_ref(s_a, act_ref)
+              #(s_a, frags, [sha])
+            }
+          }
+        }
+      }
+
+      let #(s3, dec_frags, dec_shas) = case has_decision {
+        False -> #(s2, [], [])
+        True -> {
+          let dec_str = extract_object_field(args, "decision")
+          case json.decode(dec_str) {
+            Error(_) -> #(s2, [], [])
+            Ok(dec_obj) -> {
+              let dec_annotation =
+                result.unwrap(
+                  json.get_string(dec_obj, "annotation"),
+                  annotation,
+                )
+              let dec_payload =
+                result.unwrap(json.get_string(dec_obj, "payload"), "")
+              let obs_sha_ref = session.ObsRef(sha: session.head(s2))
+              let #(s_d, dec_ref) =
+                session.decide(
+                  s2,
+                  dec_annotation,
+                  obs_sha_ref,
+                  dec_payload,
+                  act_frags,
+                )
+              let sha = session.ref_sha(dec_ref)
+              let frags = session.fragments_for_ref(s_d, dec_ref)
+              #(s_d, frags, [sha])
+            }
+          }
+        }
+      }
+
+      // Always build observation
+      let #(s4, obs_ref) =
+        session.observe(s3, annotation, obs_ref_str, obs_payload, dec_frags)
+      let obs_sha = session.ref_sha(obs_ref)
+      let obs_frags = session.fragments_for_ref(s4, obs_ref)
+
+      // Collect all fragments (act + decide + observe)
+      let all_frags = list.flatten([act_frags, dec_frags, obs_frags])
+
+      // Build response JSON with all SHAs
+      let response = build_bias_response(obs_sha, dec_shas, act_shas)
+      #(s4, response, all_frags)
     }
-    _, _ -> #(s, err_json("observe requires ref and data"), None)
   }
+}
+
+fn build_bias_response(
+  obs_sha: String,
+  dec_shas: List(String),
+  act_shas: List(String),
+) -> String {
+  let base = "{\"obs_sha\":\"" <> obs_sha <> "\""
+  let with_dec = case dec_shas {
+    [sha, ..] -> base <> ",\"dec_sha\":\"" <> sha <> "\""
+    [] -> base
+  }
+  let with_act = case act_shas {
+    [sha, ..] -> with_dec <> ",\"act_sha\":\"" <> sha <> "\""
+    [] -> with_dec
+  }
+  with_act <> "}"
 }
 
 fn tool_commit(
   s: session.Session,
   args: dynamic.Dynamic,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
-  case json.get_string(args, "name") {
-    Error(Nil) -> #(s, err_json("commit requires name"), None)
-    Ok(_name) -> {
-      let obs_shas = result.unwrap(json.get_list(args, "observations"), [])
-      let observations =
-        shas_to_fragments(s, list.map(obs_shas, session.ObsRef))
-      let #(s2, root, sha) = session.commit(s, observations)
-      #(s2, "{\"root_sha\":\"" <> sha <> "\"}", Some(root))
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
+  case json.get_string(args, "annotation") {
+    Error(Nil) -> #(s, err_json("commit requires annotation"), [])
+    Ok(annotation) -> {
+      // MCP mode also requires a name
+      let name = result.unwrap(json.get_string(args, "name"), "")
+      case name {
+        "" -> #(s, err_json("commit requires name"), [])
+        _ -> {
+          let obs_shas =
+            result.unwrap(json.get_list(args, "observations"), [])
+          let observations =
+            shas_to_fragments(s, list.map(obs_shas, session.ObsRef))
+          let #(s2, root, sha) =
+            session.commit(s, annotation, observations)
+          #(s2, "{\"root_sha\":\"" <> sha <> "\"}", [root])
+        }
+      }
     }
   }
 }
@@ -259,18 +343,26 @@ fn shas_to_fragments(
   list.flat_map(refs, session.fragments_for_ref(s, _))
 }
 
-// Fallback for when a tool's fragment lookup fails.
-// Should never happen in practice — acts, decides, observes always store.
-fn dummy_shard() -> fragmentation.Fragment {
-  let r = fragmentation.ref(fragmentation.hash("dummy"), "dummy")
-  let w =
-    fragmentation.witnessed(
-      fragmentation.Author("gall"),
-      fragmentation.Committer("gall"),
-      fragmentation.Timestamp("0"),
-      fragmentation.Message("dummy"),
-    )
-  fragmentation.shard(r, w, "dummy")
+/// Extract a nested object field as a raw JSON string for re-parsing.
+fn extract_object_field(obj: dynamic.Dynamic, field: String) -> String {
+  let encoded = json.encode(obj)
+  extract_object_from_json(encoded, field)
+}
+
+/// Check if a nested object field exists (non-empty).
+fn has_object_field(obj: dynamic.Dynamic, field: String) -> Bool {
+  let encoded = json.encode(obj)
+  let val = extract_object_from_json(encoded, field)
+  val != "{}" && val != ""
+}
+
+/// Extract a nested object from a JSON string by field name.
+fn extract_object_from_json(json_str: String, field: String) -> String {
+  let needle = "\"" <> field <> "\":"
+  case string.split_once(json_str, needle) {
+    Error(Nil) -> "{}"
+    Ok(#(_, rest)) -> extract_json_value(string.trim_start(rest))
+  }
 }
 
 fn err_json(msg: String) -> String {
@@ -417,7 +509,7 @@ fn extract_primitive(s: String) -> String {
   }
 }
 // ---------------------------------------------------------------------------
-// Tool definitions — imported from gall/tools
+// Tool definitions — imported from cairn/tools
 // ---------------------------------------------------------------------------
 // All tool schemas are defined in tools.gleam.
 // MCP mode uses tools.mcp_tools_json() for the tools/list response.

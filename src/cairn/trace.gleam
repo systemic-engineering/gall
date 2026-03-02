@@ -1,6 +1,6 @@
-/// Telemetry scaffolding for gall.
+/// Telemetry scaffolding for cairn.
 ///
-/// Event names follow [:gall, <layer>, <operation>] convention.
+/// Event names follow [:cairn, <layer>, <operation>] convention.
 /// Uses a simple Erlang FFI that calls :telemetry.execute/3 if available,
 /// falling back to a no-op.
 ///
@@ -26,14 +26,14 @@ pub type Metadata {
 // Event name constants
 // ---------------------------------------------------------------------------
 
-/// Event: [:gall, :tool, :call]
+/// Event: [:cairn, :tool, :call]
 pub fn tool_call_event() -> List(String) {
-  ["gall", "tool", "call"]
+  ["cairn", "tool", "call"]
 }
 
-/// Event: [:gall, :tool, :result]
+/// Event: [:cairn, :tool, :result]
 pub fn tool_result_event() -> List(String) {
-  ["gall", "tool", "result"]
+  ["cairn", "tool", "result"]
 }
 
 // ---------------------------------------------------------------------------
@@ -65,11 +65,11 @@ fn emit(
   meta: Metadata,
   _duration: Option(Int),
 ) -> Nil {
-  // Scaffolding: calls gall_trace_ffi:execute/3 which either calls
+  // Scaffolding: calls cairn_trace_ffi:execute/3 which either calls
   // :telemetry.execute/3 or is a no-op if telemetry is not available.
   // For now, pure no-op until telemetry dep is added.
   execute_ffi(event, name, meta)
 }
 
-@external(erlang, "gall_trace_ffi", "execute")
+@external(erlang, "cairn_trace_ffi", "execute")
 fn execute_ffi(event: List(String), name: String, meta: Metadata) -> Nil

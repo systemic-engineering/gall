@@ -1,4 +1,4 @@
-import gall/config
+import cairn/config
 import gleeunit/should
 
 // ---------------------------------------------------------------------------

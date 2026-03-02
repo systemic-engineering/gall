@@ -1,20 +1,20 @@
-# gall
+# cairn
 
-[![Package Version](https://img.shields.io/hexpm/v/gall)](https://hex.pm/packages/gall)
-[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/gall/)
+[![Package Version](https://img.shields.io/hexpm/v/cairn)](https://hex.pm/packages/cairn)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/cairn/)
 
 ```sh
-gleam add gall@1
+gleam add cairn@1
 ```
 ```gleam
-import gall
+import cairn
 
 pub fn main() -> Nil {
   // TODO: An example of the project in use
 }
 ```
 
-Further documentation can be found at <https://hexdocs.pm/gall>.
+Further documentation can be found at <https://hexdocs.pm/cairn>.
 
 ## Development
 

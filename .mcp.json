@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "gall": {
+    "cairn": {
       "type": "stdio",
       "command": "bash",
       "args": [
         "-c",
-        "cd \"${GALL_HOME:-.}\" && exec nix develop .#default --command gleam run --module gall/daemon"
+        "cd \"${CAIRN_HOME:-.}\" && exec nix develop .#default --command gleam run --module cairn/daemon"
       ]
     }
   }

@@ -1,14 +1,12 @@
-// Tool schema definitions for the gall MCP protocol.
+// Tool schema definitions for the cairn MCP protocol.
 //
 // Both daemon.gleam (stdio MCP) and mcp.gleam (unix socket MCP) import
 // tool schemas from here instead of defining them inline. Single source
 // of truth for tool names, descriptions, and input schemas.
 //
 // Two tool sets:
-//   - ADO tools: observe, decide, act, commit — session-scoped witnessing
+//   - Bias tools: bias, commit — session-scoped witnessing
 //   - Git tools: status, diff, log, blame, show_file — always available
-//
-// daemon.gleam exposes both sets. mcp.gleam exposes ADO only.
 
 // ---------------------------------------------------------------------------
 // Tool name constants
@@ -16,15 +14,12 @@
 
 /// All tool names, in the order they appear in the daemon's tools/list.
 pub fn tool_names() -> List(String) {
-  list_append(
-    ado_tool_names(),
-    list_append(git_tool_names(), exec_tool_names()),
-  )
+  list_append(bias_tool_names(), git_tool_names())
 }
 
-/// ADO witnessing tool names.
-pub fn ado_tool_names() -> List(String) {
-  ["observe", "decide", "act", "commit"]
+/// Bias witnessing tool names.
+pub fn bias_tool_names() -> List(String) {
+  ["bias", "commit"]
 }
 
 /// Git tool names (daemon-only).
@@ -32,23 +27,14 @@ pub fn git_tool_names() -> List(String) {
   ["git_status", "git_diff", "git_log", "git_blame", "git_show_file"]
 }
 
-/// Exec tool names (daemon-only).
-pub fn exec_tool_names() -> List(String) {
-  ["exec"]
-}
-
 // ---------------------------------------------------------------------------
 // Composed tool lists (for tools/list responses)
 // ---------------------------------------------------------------------------
 
-/// Full tool list for daemon mode (ADO + git).
+/// Full tool list for daemon mode (bias + git).
 pub fn daemon_tools_json() -> String {
   "{\"tools\":["
-  <> observe_schema()
-  <> ","
-  <> decide_schema()
-  <> ","
-  <> act_schema()
+  <> bias_schema()
   <> ","
   <> commit_schema()
   <> ","
@@ -61,89 +47,76 @@ pub fn daemon_tools_json() -> String {
   <> git_blame_schema()
   <> ","
   <> git_show_file_schema()
-  <> ","
-  <> exec_schema()
   <> "]}"
 }
 
-/// Tool list for MCP mode (ADO only, uses mcp_commit_schema which requires name).
+/// Tool list for MCP mode (bias + commit only).
 pub fn mcp_tools_json() -> String {
   "{\"tools\":["
-  <> observe_schema()
-  <> ","
-  <> decide_schema()
-  <> ","
-  <> act_schema()
+  <> bias_schema()
   <> ","
   <> mcp_commit_schema()
   <> "]}"
 }
 
 // ---------------------------------------------------------------------------
-// ADO tool schemas
+// Bias tool schema
 // ---------------------------------------------------------------------------
 
-pub fn observe_schema() -> String {
-  "{\"name\":\"observe\","
-  <> "\"description\":\"Record an observation. What you see, at what coordinate.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"ref\":{\"type\":\"string\","
-  <> "\"description\":\"Source coordinate. file:path, concept:name, section:heading, task:label.\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"What you observed.\"},"
-  <> "\"decisions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"dec_sha values from prior decide calls to link as children.\"}},"
-  <> "\"required\":[\"ref\",\"data\"]}}"
-}
-
-pub fn decide_schema() -> String {
-  "{\"name\":\"decide\","
-  <> "\"description\":\"Record a decision derived from an observation.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"rule\":{\"type\":\"string\","
-  <> "\"description\":\"Your structural conclusion.\"},"
-  <> "\"acts\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"act_sha values from prior act calls to link as children.\"},"
-  <> "\"obs_sha\":{\"type\":\"string\","
-  <> "\"description\":\"Optional. Observation this decision belongs to. Defaults to HEAD.\"}},"
-  <> "\"required\":[\"rule\"]}}"
-}
-
-pub fn act_schema() -> String {
-  "{\"name\":\"act\","
-  <> "\"description\":\"Record an action taken.\","
+pub fn bias_schema() -> String {
+  "{\"name\":\"bias\","
+  <> "\"description\":\"Observation filtered through subjectivity, made structural. Observe first. Decide from observation. Act from decision.\","
   <> "\"inputSchema\":{\"type\":\"object\","
   <> "\"properties\":{"
   <> "\"annotation\":{\"type\":\"string\","
-  <> "\"description\":\"Signal kind + summary. What drain filters on. e.g. '@work uphill_late'\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"Structured payload. e.g. 'state:uphill_late\\nid:42\\nscope:src/signal.gleam'\"}},"
-  <> "\"required\":[\"annotation\"]}}"
+  <> "\"description\":\"Signal kind. What drain filters on.\"},"
+  <> "\"observation\":{\"type\":\"object\","
+  <> "\"properties\":{"
+  <> "\"ref\":{\"type\":\"string\",\"description\":\"Where you observed it. Resolved to SHA at submit.\"},"
+  <> "\"payload\":{\"type\":\"string\",\"description\":\"What you observed.\"}},"
+  <> "\"required\":[\"ref\",\"payload\"]},"
+  <> "\"decision\":{\"type\":\"object\","
+  <> "\"properties\":{"
+  <> "\"annotation\":{\"type\":\"string\",\"description\":\"Signal kind for the decision.\"},"
+  <> "\"payload\":{\"type\":\"string\",\"description\":\"What you concluded from observation.\"}},"
+  <> "\"required\":[\"payload\"]},"
+  <> "\"action\":{\"type\":\"object\","
+  <> "\"properties\":{"
+  <> "\"annotation\":{\"type\":\"string\",\"description\":\"Signal kind for the action. @exec for shell commands.\"},"
+  <> "\"payload\":{\"type\":\"string\",\"description\":\"The action. For @exec: the shell command.\"}},"
+  <> "\"required\":[\"payload\"]}},"
+  <> "\"required\":[\"annotation\",\"observation\"]}}"
 }
+
+// ---------------------------------------------------------------------------
+// Commit schema
+// ---------------------------------------------------------------------------
 
 pub fn commit_schema() -> String {
   "{\"name\":\"commit\","
-  <> "\"description\":\"Seal the session and commit to gestalt. Call once at the end of the task.\","
+  <> "\"description\":\"Seal the session and commit to gestalt.\","
   <> "\"inputSchema\":{\"type\":\"object\","
   <> "\"properties\":{"
+  <> "\"annotation\":{\"type\":\"string\","
+  <> "\"description\":\"Signal kind for the commit.\"},"
   <> "\"observations\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"obs_sha values to seal as the session root's children.\"}},"
-  <> "\"required\":[]}}"
+  <> "\"description\":\"obs_sha values to seal.\"}},"
+  <> "\"required\":[\"annotation\"]}}"
 }
 
 /// MCP-mode commit schema. Requires a session name (unlike daemon mode).
 pub fn mcp_commit_schema() -> String {
   "{\"name\":\"commit\","
-  <> "\"description\":\"Seal the session. Call once at the end of the task.\","
+  <> "\"description\":\"Seal the session.\","
   <> "\"inputSchema\":{\"type\":\"object\","
   <> "\"properties\":{"
+  <> "\"annotation\":{\"type\":\"string\","
+  <> "\"description\":\"Signal kind for the commit.\"},"
   <> "\"name\":{\"type\":\"string\","
   <> "\"description\":\"Session name.\"},"
   <> "\"observations\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"obs_sha values to seal as the session root's children.\"}},"
-  <> "\"required\":[\"name\"]}}"
+  <> "\"description\":\"obs_sha values to seal.\"}},"
+  <> "\"required\":[\"annotation\",\"name\"]}}"
 }
 
 // ---------------------------------------------------------------------------
@@ -191,20 +164,6 @@ pub fn git_show_file_schema() -> String {
   <> "\"path\":{\"type\":\"string\",\"description\":\"File path relative to project root.\"},"
   <> "\"ref\":{\"type\":\"string\",\"description\":\"Git ref (default HEAD).\"}},"
   <> "\"required\":[\"path\"]}}"
-}
-
-// ---------------------------------------------------------------------------
-// Exec tool schema (daemon-only)
-// ---------------------------------------------------------------------------
-
-pub fn exec_schema() -> String {
-  "{\"name\":\"exec\","
-  <> "\"description\":\"Execute a shell command in the project directory. Witnessed as @exec in the session trace.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"command\":{\"type\":\"string\","
-  <> "\"description\":\"Shell command to execute.\"}},"
-  <> "\"required\":[\"command\"]}}"
 }
 
 // ---------------------------------------------------------------------------

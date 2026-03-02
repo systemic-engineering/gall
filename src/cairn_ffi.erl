@@ -1,4 +1,4 @@
--module(gall_ffi).
+-module(cairn_ffi).
 -export([
     now/0,
     keygen/1,
@@ -58,7 +58,7 @@ get_env(Name) ->
 %% ---------------------------------------------------------------------------
 
 %% Generate an ed25519 keypair at Path (no passphrase).
-%% Path: ".gall/<nickname>/ssh/id_ed25519"
+%% Path: ".cairn/<nickname>/ssh/id_ed25519"
 %% Creates parent directories as needed.
 %% Returns {ok, PubKeyBinary} | {error, Reason}.
 keygen(Path) ->
@@ -189,12 +189,12 @@ receive_event(Port, Sock) ->
     end.
 
 %% ---------------------------------------------------------------------------
-%% Git persistence (.gall/gestalt)
+%% Git persistence (.cairn/gestalt)
 %% ---------------------------------------------------------------------------
 
 %% Reed's ed25519 public key (32 raw bytes, no SSH header).
 %% github.com/systemic-engineer — the root of trust for agent key derivation.
-%% Shipped with gall. Anyone can re-derive and verify.
+%% Shipped with cairn. Anyone can re-derive and verify.
 reed_root_pubkey() ->
     <<16#27, 16#ea, 16#cd, 16#f9, 16#32, 16#30, 16#e3, 16#66,
       16#ed, 16#bb, 16#1d, 16#6f, 16#01, 16#8b, 16#9a, 16#cc,
@@ -203,7 +203,7 @@ reed_root_pubkey() ->
 
 %% Derive an ed25519 agent keypair from Alex's public key + nickname.
 %%
-%% seed = HMAC-SHA256(key=alex_pubkey, "gall:" || nickname)
+%% seed = HMAC-SHA256(key=alex_pubkey, "cairn:" || nickname)
 %% {PubKey, PrivKey} = ed25519(seed)
 %%
 %% Deterministic: same alex pubkey + same nickname → same keypair every time.
@@ -211,7 +211,7 @@ reed_root_pubkey() ->
 %%
 %% Security model: provenance, not secrecy.
 %% The key is not secret — the derivation formula is public.
-%% What it proves: this tag was produced by gall using alex's root key.
+%% What it proves: this tag was produced by cairn using alex's root key.
 derive_agent_keypair(Nickname) ->
     ReedPub  = reed_root_pubkey(),
     Identity = <<Nickname/binary, "@systemic.engineering">>,
@@ -278,7 +278,7 @@ git_current_branch(RepoDir) ->
 %%
 %% Tag:     <TagName>  (e.g. sessions/main/mara/1737842315)
 %% Message: session: <TagName>: <RootSha>
-%%          key: ssh-ed25519 <base64> gall/<Nickname>
+%%          key: ssh-ed25519 <base64> cairn/<Nickname>
 %%
 %% When AlexKey is set, the attestation footer is appended:
 %%   ---
@@ -297,14 +297,14 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, TagName, RootSha, Alex
     TagStr   = binary_to_list(TagName),
     %% Derive agent keypair and write to temp file for this session.
     {PubKey, PrivKey} = derive_agent_keypair(Nickname),
-    KeyComment = "gall/" ++ NickStr,
-    KeyFile    = PathStr ++ "/.git/GALL_AGENT_KEY",
+    KeyComment = "cairn/" ++ NickStr,
+    KeyFile    = PathStr ++ "/.git/CAIRN_AGENT_KEY",
     {Pem, PubLine} = openssh_ed25519(PubKey, PrivKey, KeyComment),
     ok = file:write_file(KeyFile, Pem),
     ok = file:change_mode(KeyFile, 8#600),
     %% allowed_signers for this session: the derived key.
     AgentEmail = <<Nickname/binary, "@systemic.engineering">>,
-    AllowedSig = PathStr ++ "/.git/GALL_ALLOWED",
+    AllowedSig = PathStr ++ "/.git/CAIRN_ALLOWED",
     ok = file:write_file(AllowedSig,
         <<AgentEmail/binary, " ", PubLine/binary>>),
     %% Build tag message.
@@ -323,8 +323,8 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, TagName, RootSha, Alex
                                         KeyLine/binary, Footer]),
             {binary_to_list(AlexKey), BaseMsg}
     end,
-    CommitMsgFile = PathStr ++ "/.git/GALL_COMMIT_MSG",
-    TagMsgFile    = PathStr ++ "/.git/GALL_TAG_MSG",
+    CommitMsgFile = PathStr ++ "/.git/CAIRN_COMMIT_MSG",
+    TagMsgFile    = PathStr ++ "/.git/CAIRN_TAG_MSG",
     ok = file:write_file(CommitMsgFile, TagMsg),
     ok = file:write_file(TagMsgFile, TagMsg),
     AgentEmailStr = NickStr ++ "@systemic.engineering",
@@ -347,7 +347,7 @@ git_commit_session(RepoDir, RelPath, Nickname, SessionId, TagName, RootSha, Alex
     ok.
 
 %% ---------------------------------------------------------------------------
-%% Config tag (.gall/config)
+%% Config tag (.cairn/config)
 %% ---------------------------------------------------------------------------
 
 %% Read the config tag message. Returns "" if tag does not exist.
@@ -361,7 +361,7 @@ read_config_tag(RepoDir) ->
 %% The tag is signed with the derived agent key — same trust chain as sessions.
 write_config_tag(RepoDir, Contents) ->
     PathStr  = binary_to_list(RepoDir),
-    MsgFile  = PathStr ++ "/.git/GALL_CONFIG_MSG",
+    MsgFile  = PathStr ++ "/.git/CAIRN_CONFIG_MSG",
     ok = file:write_file(MsgFile, Contents),
     os:cmd("git -C " ++ PathStr ++ " tag -d config 2>/dev/null"),
     os:cmd("git -C " ++ PathStr ++ " tag -a config -F " ++ MsgFile),
@@ -431,16 +431,16 @@ git_show_file(Dir, Ref, Path) ->
 %% Gestalt resources
 %% ---------------------------------------------------------------------------
 
-%% List gall/* tags in the project repo, newest first.
+%% List cairn/* tags in the project repo, newest first.
 %% Returns newline-separated tag names.
 list_gestalt_sessions(WorkDir) ->
     Raw = os:cmd("git -C " ++ binary_to_list(WorkDir)
-                 ++ " tag -l 'gall/*' --sort=-creatordate 2>/dev/null"),
+                 ++ " tag -l 'cairn/*' --sort=-creatordate 2>/dev/null"),
     unicode:characters_to_binary(string:trim(Raw)).
 
 %% Read the message body of a specific gestalt tag.
-read_gestalt_session(GallDir, Tag) ->
-    Raw = os:cmd("git -C " ++ binary_to_list(GallDir)
+read_gestalt_session(CairnDir, Tag) ->
+    Raw = os:cmd("git -C " ++ binary_to_list(CairnDir)
                  ++ " tag -l " ++ binary_to_list(Tag)
                  ++ " --format='%(contents)' 2>/dev/null"),
     unicode:characters_to_binary(string:trim(Raw)).
@@ -449,7 +449,7 @@ read_gestalt_session(GallDir, Tag) ->
 %% Sync — send session patch
 %% ---------------------------------------------------------------------------
 
-%% Send the most recent .gall/ commit as a patch to Remote.
+%% Send the most recent .cairn/ commit as a patch to Remote.
 %%
 %% Remote contains '@'  → email recipient, sent via git send-email
 %% Remote is a git URL  → git push

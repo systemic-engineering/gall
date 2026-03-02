@@ -1,5 +1,5 @@
 {
-  description = "gall — tamper-proof witnessed agent work. In git. The audacity.";
+  description = "cairn — content-addressed witnessed agent work. Stones stacked to mark I was here.";
 
   inputs = {
     nixpkgs.url     = "github:NixOS/nixpkgs/nixos-unstable";
@@ -15,7 +15,7 @@
         gleam    = pkgs.gleam;
         rebar3   = beamPkgs.rebar3;
       in {
-        # Development shell: all tools needed to build and run gall.
+        # Development shell: all tools needed to build and run cairn.
         devShells.default = pkgs.mkShell {
           buildInputs = [
             gleam
@@ -31,11 +31,11 @@
         };
 
         # Spawn a sandboxed agent session.
-        # Usage: nix develop .#agent --command gleam run --module gall/daemon
+        # Usage: nix develop .#agent --command gleam run --module cairn/daemon
         #
         # The agent shell deliberately omits direct git write access.
-        # gall (the host process) controls what enters the project's git history.
-        # The agent reads history through gall's MCP tools; it never writes .git.
+        # cairn (the host process) controls what enters the project's git history.
+        # The agent reads history through cairn's MCP tools; it never writes .git.
         devShells.agent = pkgs.mkShell {
           buildInputs = [
             gleam
@@ -47,7 +47,7 @@
           shellHook = ''
             export LANG=en_US.UTF-8
             # Agent sessions are sandboxed: no network by default.
-            # git push / git send-email are available only to gall (the host).
+            # git push / git send-email are available only to cairn (the host).
           '';
         };
       });

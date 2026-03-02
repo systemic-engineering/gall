@@ -1,4 +1,4 @@
-import gall/tools
+import cairn/tools
 import gleam/string
 import gleeunit/should
 
@@ -6,18 +6,18 @@ import gleeunit/should
 // Tool schema names
 // ---------------------------------------------------------------------------
 
-pub fn tool_names_include_ado_tools_test() {
+pub fn tool_names_include_bias_tools_test() {
   let names = tools.tool_names()
   names
   |> should.equal([
-    "observe", "decide", "act", "commit", "git_status", "git_diff", "git_log",
-    "git_blame", "git_show_file", "exec",
+    "bias", "commit", "git_status", "git_diff", "git_log", "git_blame",
+    "git_show_file",
   ])
 }
 
-pub fn ado_tool_names_test() {
-  let names = tools.ado_tool_names()
-  names |> should.equal(["observe", "decide", "act", "commit"])
+pub fn bias_tool_names_test() {
+  let names = tools.bias_tool_names()
+  names |> should.equal(["bias", "commit"])
 }
 
 pub fn git_tool_names_test() {
@@ -29,53 +29,37 @@ pub fn git_tool_names_test() {
 }
 
 // ---------------------------------------------------------------------------
-// Schema content — observe
+// Schema content — bias
 // ---------------------------------------------------------------------------
 
-pub fn observe_schema_has_name_test() {
-  let schema = tools.observe_schema()
-  schema |> string.contains("\"name\":\"observe\"") |> should.be_true()
+pub fn bias_schema_has_name_test() {
+  let schema = tools.bias_schema()
+  schema |> string.contains("\"name\":\"bias\"") |> should.be_true()
 }
 
-pub fn observe_schema_has_required_fields_test() {
-  let schema = tools.observe_schema()
-  schema |> string.contains("\"ref\"") |> should.be_true()
-  schema |> string.contains("\"data\"") |> should.be_true()
-  schema
-  |> string.contains("\"required\":[\"ref\",\"data\"]")
-  |> should.be_true()
-}
-
-// ---------------------------------------------------------------------------
-// Schema content — decide
-// ---------------------------------------------------------------------------
-
-pub fn decide_schema_has_name_test() {
-  let schema = tools.decide_schema()
-  schema |> string.contains("\"name\":\"decide\"") |> should.be_true()
-}
-
-pub fn decide_schema_has_required_fields_test() {
-  let schema = tools.decide_schema()
-  schema |> string.contains("\"rule\"") |> should.be_true()
-  schema |> string.contains("\"required\":[\"rule\"]") |> should.be_true()
-}
-
-// ---------------------------------------------------------------------------
-// Schema content — act
-// ---------------------------------------------------------------------------
-
-pub fn act_schema_has_name_test() {
-  let schema = tools.act_schema()
-  schema |> string.contains("\"name\":\"act\"") |> should.be_true()
-}
-
-pub fn act_schema_has_required_fields_test() {
-  let schema = tools.act_schema()
+pub fn bias_schema_has_required_fields_test() {
+  let schema = tools.bias_schema()
   schema |> string.contains("\"annotation\"") |> should.be_true()
+  schema |> string.contains("\"observation\"") |> should.be_true()
   schema
-  |> string.contains("\"required\":[\"annotation\"]")
+  |> string.contains("\"required\":[\"annotation\",\"observation\"]")
   |> should.be_true()
+}
+
+pub fn bias_schema_has_nested_observation_test() {
+  let schema = tools.bias_schema()
+  schema |> string.contains("\"ref\"") |> should.be_true()
+  schema |> string.contains("\"payload\"") |> should.be_true()
+}
+
+pub fn bias_schema_has_optional_decision_test() {
+  let schema = tools.bias_schema()
+  schema |> string.contains("\"decision\"") |> should.be_true()
+}
+
+pub fn bias_schema_has_optional_action_test() {
+  let schema = tools.bias_schema()
+  schema |> string.contains("\"action\"") |> should.be_true()
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +69,13 @@ pub fn act_schema_has_required_fields_test() {
 pub fn commit_schema_has_name_test() {
   let schema = tools.commit_schema()
   schema |> string.contains("\"name\":\"commit\"") |> should.be_true()
+}
+
+pub fn commit_schema_requires_annotation_test() {
+  let schema = tools.commit_schema()
+  schema
+  |> string.contains("\"required\":[\"annotation\"]")
+  |> should.be_true()
 }
 
 // ---------------------------------------------------------------------------
@@ -120,16 +111,23 @@ pub fn git_show_file_schema_has_name_test() {
 // Composed tool lists
 // ---------------------------------------------------------------------------
 
-pub fn daemon_tools_json_contains_all_tools_test() {
+pub fn daemon_tools_json_contains_bias_test() {
   let json = tools.daemon_tools_json()
-  json |> string.contains("\"observe\"") |> should.be_true()
+  json |> string.contains("\"bias\"") |> should.be_true()
   json |> string.contains("\"git_status\"") |> should.be_true()
   json |> string.contains("\"git_show_file\"") |> should.be_true()
 }
 
-pub fn mcp_tools_json_contains_ado_only_test() {
+pub fn daemon_tools_json_does_not_contain_old_tools_test() {
+  let json = tools.daemon_tools_json()
+  json |> string.contains("\"name\":\"observe\"") |> should.be_false()
+  json |> string.contains("\"name\":\"decide\"") |> should.be_false()
+  json |> string.contains("\"name\":\"act\"") |> should.be_false()
+}
+
+pub fn mcp_tools_json_contains_bias_only_test() {
   let json = tools.mcp_tools_json()
-  json |> string.contains("\"observe\"") |> should.be_true()
+  json |> string.contains("\"bias\"") |> should.be_true()
   json |> string.contains("\"commit\"") |> should.be_true()
   // MCP tools should NOT contain git tools
   json |> string.contains("\"git_status\"") |> should.be_false()

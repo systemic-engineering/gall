@@ -1,5 +1,5 @@
 import fragmentation
-import gall/store
+import cairn/store
 import gleeunit/should
 import simplifile
 
@@ -8,13 +8,13 @@ import simplifile
 // ---------------------------------------------------------------------------
 
 fn test_dir(suffix: String) -> String {
-  "/tmp/gall_store_test_" <> suffix
+  "/tmp/cairn_store_test_" <> suffix
 }
 
 fn fixed_witnessed() -> fragmentation.Witnessed {
   fragmentation.witnessed(
     fragmentation.Author("test@systemic.engineering"),
-    fragmentation.Committer("gall"),
+    fragmentation.Committer("cairn"),
     fragmentation.Timestamp("1740000000"),
     fragmentation.Message("test"),
   )
@@ -72,7 +72,7 @@ pub fn verify_passes_when_all_written_test() {
   let obs = make_fragment("obs-data", [dec])
   let root = make_fragment("root-data", [obs])
 
-  // Eager writes — same order as gall would do during a session
+  // Eager writes — same order as cairn would do during a session
   store.write(act, dir) |> should.be_ok()
   store.write(dec, dir) |> should.be_ok()
   store.write(obs, dir) |> should.be_ok()

@@ -1,6 +1,6 @@
 /// Store: eager Fragment persistence with tamper detection.
 ///
-/// gall writes each Fragment to disk the moment it's created.
+/// cairn writes each Fragment to disk the moment it's created.
 /// The final verify pass checks every Fragment in the session tree
 /// exists on disk with matching content.
 ///

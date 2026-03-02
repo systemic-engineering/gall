@@ -1,5 +1,5 @@
 import fragmentation
-import gall/session
+import cairn/session
 import gleam/list
 import gleeunit/should
 
@@ -16,7 +16,7 @@ pub fn new_session_test() {
   let s = session.new(config)
   // Session is opaque; we just verify it was created without crashing.
   // A freshly created session should produce a deterministic commit root.
-  let #(_s, root, sha) = session.commit(s, [])
+  let #(_s, root, sha) = session.commit(s, "commit: test-session", [])
   sha
   |> should.not_equal("")
   // Root fragment is not dropped
@@ -36,7 +36,7 @@ pub fn act_returns_act_ref_test() {
     )
   let s = session.new(config)
   let #(s, ref) =
-    session.act(s, "@work scan_corpus", "scope:src/gall.gleam\nstate:scanning")
+    session.act(s, "@work scan_corpus", "scope:src/cairn.gleam\nstate:scanning")
   case ref {
     session.ActRef(_sha) -> should.be_ok(Ok(Nil))
     _ -> should.be_ok(Error("expected ActRef"))
@@ -53,7 +53,7 @@ pub fn act_returns_act_ref_test() {
   |> should.equal(fragmentation.Message("@work scan_corpus"))
   // Fragment data carries the structured payload
   fragmentation.data(frag)
-  |> should.equal("scope:src/gall.gleam\nstate:scanning")
+  |> should.equal("scope:src/cairn.gleam\nstate:scanning")
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ pub fn decide_wraps_acts_test() {
   // Build obs_ref for decide
   let obs_ref = session.ObsRef(sha: "placeholder-obs")
   let #(_s, dec_ref2) =
-    session.decide(s, obs_ref, "RequiredSection: fn:fragment", act_frags)
+    session.decide(s, "decide: placeholder-obs", obs_ref, "RequiredSection: fn:fragment", act_frags)
 
   case dec_ref2 {
     session.DecRef(_sha) -> should.be_ok(Ok(Nil))
@@ -96,14 +96,14 @@ pub fn observe_wraps_decisions_test() {
   // Build a decision fragment
   let obs_ref = session.ObsRef(sha: "placeholder-obs")
   let #(s, dec_ref) =
-    session.decide(s, obs_ref, "RequiredSection: fn:fragment", [])
+    session.decide(s, "decide: placeholder-obs", obs_ref, "RequiredSection: fn:fragment", [])
   let dec_frags = session.fragments_for_ref(s, dec_ref)
   list.length(dec_frags)
   |> should.equal(1)
 
   // Observe wraps those decisions
   let #(_s, obs_ref2) =
-    session.observe(s, "concept:fn:fragment", "fn:fragment present", dec_frags)
+    session.observe(s, "observe: concept:fn:fragment", "concept:fn:fragment", "fn:fragment present", dec_frags)
 
   case obs_ref2 {
     session.ObsRef(_sha) -> should.be_ok(Ok(Nil))
@@ -122,7 +122,7 @@ pub fn commit_returns_fragment_test() {
       name: "my-session",
     )
   let s = session.new(config)
-  let #(_s, root_frag, root_sha) = session.commit(s, [])
+  let #(_s, root_frag, root_sha) = session.commit(s, "commit: my-session", [])
 
   // root_frag is a Fragment (not dropped)
   root_sha
@@ -151,17 +151,18 @@ pub fn commit_deterministic_test() {
   let act_frags1 = session.fragments_for_ref(s1, act_ref1)
   let obs_ref1 = session.ObsRef(sha: "obs1")
   let #(s1, dec_ref1b) =
-    session.decide(s1, obs_ref1, "RequiredSection", act_frags1)
+    session.decide(s1, "decide: obs1", obs_ref1, "RequiredSection", act_frags1)
   let dec_frags1 = session.fragments_for_ref(s1, dec_ref1b)
   let #(s1, obs_ref1b) =
     session.observe(
       s1,
+      "observe: concept:fn:fragment",
       "concept:fn:fragment",
       "fn:fragment present",
       dec_frags1,
     )
   let obs_frags1 = session.fragments_for_ref(s1, obs_ref1b)
-  let #(_s1, _root1, sha1) = session.commit(s1, obs_frags1)
+  let #(_s1, _root1, sha1) = session.commit(s1, "commit: det-session", obs_frags1)
 
   let s2 = session.new(config)
   let #(s2, act_ref2) =
@@ -169,17 +170,18 @@ pub fn commit_deterministic_test() {
   let act_frags2 = session.fragments_for_ref(s2, act_ref2)
   let obs_ref2 = session.ObsRef(sha: "obs1")
   let #(s2, dec_ref2b) =
-    session.decide(s2, obs_ref2, "RequiredSection", act_frags2)
+    session.decide(s2, "decide: obs1", obs_ref2, "RequiredSection", act_frags2)
   let dec_frags2 = session.fragments_for_ref(s2, dec_ref2b)
   let #(s2, obs_ref2b) =
     session.observe(
       s2,
+      "observe: concept:fn:fragment",
       "concept:fn:fragment",
       "fn:fragment present",
       dec_frags2,
     )
   let obs_frags2 = session.fragments_for_ref(s2, obs_ref2b)
-  let #(_s2, _root2, sha2) = session.commit(s2, obs_frags2)
+  let #(_s2, _root2, sha2) = session.commit(s2, "commit: det-session", obs_frags2)
 
   sha1
   |> should.equal(sha2)
@@ -204,7 +206,7 @@ pub fn author_from_config_test() {
     [] -> panic as "expected at least one fragment"
   }
   let w = fragmentation.self_witnessed(frag)
-  // Author must be the agent, not "gall"
+  // Author must be the agent, not "cairn"
   w.author
   |> should.equal(fragmentation.Author("reed@systemic.engineering"))
   // Witness message carries the annotation

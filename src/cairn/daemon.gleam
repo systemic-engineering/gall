@@ -1,11 +1,11 @@
-/// Gall daemon — persistent MCP server over stdio.
+/// Cairn daemon — persistent MCP server over stdio.
 ///
 /// Installed into Claude Code (or any MCP client) as a long-lived server.
 /// Survives across prompts. Witnesses every session that calls commit.
 ///
 /// Two capability layers:
-///   1. ADO witnessing (observe/decide/act/commit) — session-scoped, resets
-///      after commit. Agent must call initialize to start a new session.
+///   1. Bias witnessing (bias/commit) — session-scoped, resets after commit.
+///      Agent must call initialize to start a new session.
 ///   2. Git tools (git_status/diff/log/blame/show_file) — always available,
 ///      no session required.
 ///
@@ -14,23 +14,24 @@
 /// from the file path. Reads are witnessed, not just writes.
 ///
 /// Storage:
-///   GALL_WORKTREE — project working directory (overrides PWD; set by gall spawn)
-///   GALL_BRANCH   — branch name (overrides git rev-parse; set by gall spawn)
-///   GALL_ALEX_KEY — path to alex's signing key (optional)
+///   CAIRN_WORKTREE — project working directory (overrides PWD; set by cairn spawn)
+///   CAIRN_BRANCH   — branch name (overrides git rev-parse; set by cairn spawn)
+///   CAIRN_ALEX_KEY — path to alex's signing key (optional)
 ///
-/// .gall/ lives inside the project. No nested git repo.
-/// The project's own git tracks .gall/sessions/... as plain files.
+/// .cairn/ lives inside the project. No nested git repo.
+/// The project's own git tracks .cairn/sessions/... as plain files.
 /// Session tags (sessions/<branch>/<name>/<timestamp>) live in the project git.
 ///
 /// Install:
-///   gleam run --module gall/daemon   (from project directory)
-///   or: gall daemon
+///   gleam run --module cairn/daemon   (from project directory)
+///   or: cairn daemon
 import fragmentation
-import gall/config as gall_config
-import gall/json
-import gall/session
-import gall/store
-import gall/tools
+import cairn/config as cairn_config
+import cairn/json
+import cairn/session
+import cairn/store
+import cairn/tools
+import gleam/dynamic
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -42,49 +43,49 @@ import simplifile
 // FFI
 // ---------------------------------------------------------------------------
 
-@external(erlang, "gall_ffi", "read_line")
+@external(erlang, "cairn_ffi", "read_line")
 fn read_line() -> Result(String, Nil)
 
-@external(erlang, "gall_ffi", "write_line")
+@external(erlang, "cairn_ffi", "write_line")
 fn write_line(data: String) -> Nil
 
-@external(erlang, "gall_ffi", "get_env")
+@external(erlang, "cairn_ffi", "get_env")
 fn get_env(name: String) -> Result(String, Nil)
 
-@external(erlang, "gall_ffi", "session_id")
+@external(erlang, "cairn_ffi", "session_id")
 fn session_id() -> String
 
-@external(erlang, "gall_ffi", "now")
+@external(erlang, "cairn_ffi", "now")
 fn now() -> Int
 
-@external(erlang, "gall_ffi", "git_status")
+@external(erlang, "cairn_ffi", "git_status")
 fn git_status_ffi(dir: String) -> String
 
-@external(erlang, "gall_ffi", "git_diff")
+@external(erlang, "cairn_ffi", "git_diff")
 fn git_diff_ffi(dir: String, path: String) -> String
 
-@external(erlang, "gall_ffi", "git_log")
+@external(erlang, "cairn_ffi", "git_log")
 fn git_log_ffi(dir: String, path: String, n: Int) -> String
 
-@external(erlang, "gall_ffi", "git_blame")
+@external(erlang, "cairn_ffi", "git_blame")
 fn git_blame_ffi(dir: String, path: String) -> String
 
-@external(erlang, "gall_ffi", "git_show_file")
+@external(erlang, "cairn_ffi", "git_show_file")
 fn git_show_file_ffi(dir: String, ref: String, path: String) -> String
 
-@external(erlang, "gall_ffi", "exec")
+@external(erlang, "cairn_ffi", "exec")
 fn exec_ffi(dir: String, command: String) -> String
 
-@external(erlang, "gall_ffi", "list_gestalt_sessions")
-fn list_gestalt_sessions_ffi(gall_dir: String) -> String
+@external(erlang, "cairn_ffi", "list_gestalt_sessions")
+fn list_gestalt_sessions_ffi(cairn_dir: String) -> String
 
-@external(erlang, "gall_ffi", "read_gestalt_session")
-fn read_gestalt_session_ffi(gall_dir: String, tag: String) -> String
+@external(erlang, "cairn_ffi", "read_gestalt_session")
+fn read_gestalt_session_ffi(cairn_dir: String, tag: String) -> String
 
-@external(erlang, "gall_ffi", "git_current_branch")
+@external(erlang, "cairn_ffi", "git_current_branch")
 fn git_current_branch(repo_dir: String) -> String
 
-@external(erlang, "gall_ffi", "git_commit_session")
+@external(erlang, "cairn_ffi", "git_commit_session")
 fn git_commit_session(
   repo_dir: String,
   rel_path: String,
@@ -95,10 +96,10 @@ fn git_commit_session(
   alex_key: String,
 ) -> Nil
 
-@external(erlang, "gall_ffi", "read_config_tag")
+@external(erlang, "cairn_ffi", "read_config_tag")
 fn read_config_tag(repo_dir: String) -> String
 
-@external(erlang, "gall_ffi", "send_patch")
+@external(erlang, "cairn_ffi", "send_patch")
 fn send_patch(repo_dir: String, remote: String) -> Nil
 
 // ---------------------------------------------------------------------------
@@ -121,8 +122,8 @@ pub type SessionState {
 }
 
 /// Daemon-level state. work_dir and branch are set at startup and never change.
-/// gall_dir = work_dir <> "/.gall" — derived, not stored separately.
-/// branch = GALL_BRANCH env (if set) else git_current_branch — already normalized.
+/// cairn_dir = work_dir <> "/.cairn" — derived, not stored separately.
+/// branch = CAIRN_BRANCH env (if set) else git_current_branch — already normalized.
 pub type State {
   State(work_dir: String, branch: String, alex_key: String, sess: SessionState)
 }
@@ -132,17 +133,17 @@ pub type State {
 // ---------------------------------------------------------------------------
 
 pub fn main() -> Nil {
-  // GALL_WORKTREE overrides PWD — set when gall spawns an agent into a worktree.
+  // CAIRN_WORKTREE overrides PWD — set when cairn spawns an agent into a worktree.
   let work_dir =
-    result.unwrap(get_env("GALL_WORKTREE"), result.unwrap(get_env("PWD"), "."))
-  // GALL_BRANCH overrides git rev-parse — reliable in detached-worktree contexts.
-  let branch = case get_env("GALL_BRANCH") {
+    result.unwrap(get_env("CAIRN_WORKTREE"), result.unwrap(get_env("PWD"), "."))
+  // CAIRN_BRANCH overrides git rev-parse — reliable in detached-worktree contexts.
+  let branch = case get_env("CAIRN_BRANCH") {
     Ok(b) if b != "" -> normalize_branch(b)
     _ -> normalize_branch(git_current_branch(work_dir))
   }
-  let alex_key = result.unwrap(get_env("GALL_ALEX_KEY"), "")
-  let gall_dir = work_dir <> "/.gall"
-  let _ = simplifile.create_directory_all(gall_dir)
+  let alex_key = result.unwrap(get_env("CAIRN_ALEX_KEY"), "")
+  let cairn_dir = work_dir <> "/.cairn"
+  let _ = simplifile.create_directory_all(cairn_dir)
   let state = State(work_dir:, branch:, alex_key:, sess: Idle)
   loop(state)
 }
@@ -156,18 +157,15 @@ fn loop(state: State) -> Nil {
       case string.is_empty(trimmed) {
         True -> loop(state)
         False -> {
-          let #(next_state, maybe_response, maybe_frag) = handle(state, trimmed)
+          let #(next_state, maybe_response, frags) = handle(state, trimmed)
           // Eager fragment write — write immediately, before response
-          case maybe_frag {
-            None -> Nil
-            Some(frag) ->
-              case next_state.sess {
-                Idle -> Nil
-                Active(store_dir: sd, ..) -> {
-                  let _ = store.write(frag, sd)
-                  Nil
-                }
-              }
+          case next_state.sess {
+            Idle -> Nil
+            Active(store_dir: sd, ..) ->
+              list.each(frags, fn(frag) {
+                let _ = store.write(frag, sd)
+                Nil
+              })
           }
           case maybe_response {
             None -> Nil
@@ -187,17 +185,17 @@ fn loop(state: State) -> Nil {
 fn handle(
   state: State,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let method = extract_field(json, "method")
   let id = extract_raw_field(json, "id")
 
   case method {
     "initialize" -> handle_initialize(state, id, json)
-    "notifications/initialized" -> #(state, None, None)
+    "notifications/initialized" -> #(state, None, [])
     "tools/list" -> #(
       state,
       Some(make_response(id, tools.daemon_tools_json())),
-      None,
+      [],
     )
     "tools/call" -> handle_tool_call(state, id, json)
     "resources/list" -> handle_resources_list(state, id)
@@ -205,12 +203,12 @@ fn handle(
     "resources/templates/list" -> #(
       state,
       Some(make_response(id, resource_templates_json())),
-      None,
+      [],
     )
     _ -> #(
       state,
       Some(make_error(id, -32_601, "method not found: " <> method)),
-      None,
+      [],
     )
   }
 }
@@ -223,11 +221,11 @@ fn handle_initialize(
   state: State,
   id: String,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
-  // Nickname: clientInfo.name, then GALL_NICKNAME env, then "agent"
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
+  // Nickname: clientInfo.name, then CAIRN_NICKNAME env, then "agent"
   let nickname = case extract_nested(json, "clientInfo", "name") {
     "" ->
-      case get_env("GALL_NICKNAME") {
+      case get_env("CAIRN_NICKNAME") {
         Ok(n) if n != "" -> n
         _ -> "agent"
       }
@@ -238,13 +236,13 @@ fn handle_initialize(
 
   let author = nickname <> "@systemic.engineering"
   let session_config =
-    session.SessionConfig(author: author, name: "gall-session")
+    session.SessionConfig(author: author, name: "cairn-session")
   let s = session.new(session_config)
   let sid = session_id()
   let session_rel =
     "actors/" <> nickname <> "/worktrees/" <> state.branch <> "/" <> sid
-  let tag_name = "gall/" <> state.branch <> "/" <> nickname <> "/" <> sid
-  let base = state.work_dir <> "/.gall/" <> session_rel
+  let tag_name = "cairn/" <> state.branch <> "/" <> nickname <> "/" <> sid
+  let base = state.work_dir <> "/.cairn/" <> session_rel
   let store_dir = base <> "/store"
   let _ = simplifile.create_directory_all(store_dir)
 
@@ -258,10 +256,10 @@ fn handle_initialize(
       id,
       "{\"protocolVersion\":\"2024-11-05\","
         <> "\"capabilities\":{\"tools\":{},\"resources\":{}},"
-        <> "\"serverInfo\":{\"name\":\"gall\",\"version\":\"0.1.0\"}}",
+        <> "\"serverInfo\":{\"name\":\"cairn\",\"version\":\"0.1.0\"}}",
     )
 
-  #(State(..state, sess: new_sess), Some(response), Some(meta))
+  #(State(..state, sess: new_sess), Some(response), [meta])
 }
 
 fn meta_fragment(
@@ -272,7 +270,7 @@ fn meta_fragment(
   let w =
     fragmentation.witnessed(
       fragmentation.Author(author),
-      fragmentation.Committer("gall"),
+      fragmentation.Committer("cairn"),
       fragmentation.Timestamp("0"),
       fragmentation.Message("@meta"),
     )
@@ -295,7 +293,7 @@ fn handle_tool_call(
   state: State,
   id: String,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let name = extract_nested(json, "params", "name")
   let args_str = extract_object(json, "params", "arguments")
 
@@ -303,12 +301,12 @@ fn handle_tool_call(
     Error(_) -> #(
       state,
       Some(make_response(id, content_text(err_json("invalid args json")))),
-      None,
+      [],
     )
     Ok(args) -> {
       case name {
-        // ADO witnessing — require active session
-        "observe" | "decide" | "act" -> call_ado_stateful(state, id, name, args)
+        // Bias witnessing — require active session
+        "bias" -> call_bias_stateful(state, id, args)
 
         // Commit — seal session, git commit, sync, reset to Idle
         "commit" -> call_commit(state, id, args)
@@ -319,7 +317,7 @@ fn handle_tool_call(
           #(
             state,
             Some(make_response(id, content_text(json_string(out)))),
-            None,
+            [],
           )
         }
         "git_diff" -> {
@@ -328,7 +326,7 @@ fn handle_tool_call(
           #(
             state,
             Some(make_response(id, content_text(json_string(out)))),
-            None,
+            [],
           )
         }
         "git_log" -> {
@@ -339,7 +337,7 @@ fn handle_tool_call(
           #(
             state,
             Some(make_response(id, content_text(json_string(out)))),
-            None,
+            [],
           )
         }
         "git_blame" -> {
@@ -350,15 +348,15 @@ fn handle_tool_call(
                 id,
                 content_text(err_json("git_blame requires path")),
               )),
-              None,
+              [],
             )
             Ok(path) -> {
               let out = git_blame_ffi(state.work_dir, path)
-              let #(next_state, read_frag) = record_read(state, path)
+              let #(next_state, read_frags) = record_read(state, path)
               #(
                 next_state,
                 Some(make_response(id, content_text(json_string(out)))),
-                read_frag,
+                read_frags,
               )
             }
           }
@@ -371,39 +369,16 @@ fn handle_tool_call(
                 id,
                 content_text(err_json("git_show_file requires path")),
               )),
-              None,
+              [],
             )
             Ok(path) -> {
               let ref = result.unwrap(json.get_string(args, "ref"), "")
               let out = git_show_file_ffi(state.work_dir, ref, path)
-              let #(next_state, read_frag) = record_read(state, path)
+              let #(next_state, read_frags) = record_read(state, path)
               #(
                 next_state,
                 Some(make_response(id, content_text(json_string(out)))),
-                read_frag,
-              )
-            }
-          }
-        }
-
-        // Exec — shell command execution, witnessed as @exec
-        "exec" -> {
-          case json.get_string(args, "command") {
-            Error(_) -> #(
-              state,
-              Some(make_response(
-                id,
-                content_text(err_json("exec requires command")),
-              )),
-              None,
-            )
-            Ok(command) -> {
-              let out = exec_ffi(state.work_dir, command)
-              let #(next_state, exec_frag) = record_exec(state, command, out)
-              #(
-                next_state,
-                Some(make_response(id, content_text(json_string(out)))),
-                exec_frag,
+                read_frags,
               )
             }
           }
@@ -415,31 +390,31 @@ fn handle_tool_call(
             id,
             content_text(err_json("unknown tool: " <> name)),
           )),
-          None,
+          [],
         )
       }
     }
   }
 }
 
-fn call_ado_stateful(
+fn call_bias_stateful(
   state: State,
   id: String,
-  name: String,
-  args,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+  args: dynamic.Dynamic,
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   case state.sess {
     Idle -> #(
       state,
       Some(make_error(id, -32_002, "not initialized — call initialize first")),
-      None,
+      [],
     )
     Active(session: s, ..) as active -> {
-      let #(next_s, result_json, maybe_frag) = call_ado(s, name, args)
+      let #(next_s, result_json, frags) =
+        call_bias(s, state.work_dir, args)
       #(
         State(..state, sess: Active(..active, session: next_s)),
         Some(make_response(id, content_text(result_json))),
-        maybe_frag,
+        frags,
       )
     }
   }
@@ -449,12 +424,12 @@ fn call_commit(
   state: State,
   id: String,
   args,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   case state.sess {
     Idle -> #(
       state,
       Some(make_error(id, -32_002, "not initialized — call initialize first")),
-      None,
+      [],
     )
     Active(
       session: s,
@@ -464,9 +439,11 @@ fn call_commit(
       nickname: nick,
       sid:,
     ) -> {
+      let annotation =
+        result.unwrap(json.get_string(args, "annotation"), "commit")
       let obs_shas = result.unwrap(json.get_list(args, "observations"), [])
       let observations = shas_to_frags(s, list.map(obs_shas, session.ObsRef))
-      let #(_, root, sha) = session.commit(s, observations)
+      let #(_, root, sha) = session.commit(s, annotation, observations)
       let _ = store.write(root, sd)
 
       case store.verify(root, sd) {
@@ -479,14 +456,14 @@ fn call_commit(
               id,
               content_text(err_json("verify failed: " <> reason)),
             )),
-            None,
+            [],
           )
         }
         Ok(Nil) -> {
-          // Commit .gall/sessions/... into the project's git (no nested repo).
+          // Commit .cairn/sessions/... into the project's git (no nested repo).
           git_commit_session(
             state.work_dir,
-            ".gall/" <> sr <> "/store",
+            ".cairn/" <> sr <> "/store",
             nick,
             sid,
             tn,
@@ -494,7 +471,7 @@ fn call_commit(
             state.alex_key,
           )
           // Sync if configured
-          let sync_cfg = gall_config.parse(read_config_tag(state.work_dir))
+          let sync_cfg = cairn_config.parse(read_config_tag(state.work_dir))
           case sync_cfg.sync {
             True -> send_patch(state.work_dir, sync_cfg.sync_remote)
             False -> Nil
@@ -510,7 +487,7 @@ fn call_commit(
                 "{\"root_sha\":\"" <> sha <> "\",\"tag\":\"" <> tag <> "\"}",
               ),
             )),
-            None,
+            [],
           )
         }
       }
@@ -518,60 +495,178 @@ fn call_commit(
   }
 }
 
-// ADO tool dispatch — pure, no state mutation at this level
-fn call_ado(
+// ---------------------------------------------------------------------------
+// Bias tool — ODA with cascading constraint + @exec effecting
+// ---------------------------------------------------------------------------
+
+/// Bias tool: ODA with cascading constraint.
+/// observation is always required.
+/// action requires decision requires observation.
+/// When action.annotation is "@exec", run the command via exec_ffi.
+fn call_bias(
   s: session.Session,
-  name: String,
-  args,
-) -> #(session.Session, String, Option(fragmentation.Fragment)) {
-  case name {
-    "act" -> {
-      case json.get_string(args, "annotation") {
-        Error(_) -> #(s, err_json("act requires annotation"), None)
-        Ok(annotation) -> {
-          let data = result.unwrap(json.get_string(args, "data"), "")
-          let #(s2, ref) = session.act(s, annotation, data)
-          let sha = session.ref_sha(ref)
-          let frags = session.fragments_for_ref(s2, ref)
-          let frag = list.first(frags) |> result.unwrap(dummy_shard())
-          #(s2, "{\"act_sha\":\"" <> sha <> "\"}", Some(frag))
-        }
-      }
-    }
-    "decide" -> {
-      case json.get_string(args, "rule") {
-        Error(_) -> #(s, err_json("decide requires rule"), None)
-        Ok(rule) -> {
-          let obs_sha = case json.get_string(args, "obs_sha") {
-            Ok(sha) if sha != "" -> sha
-            _ -> session.head(s)
+  work_dir: String,
+  args: dynamic.Dynamic,
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
+  case json.get_string(args, "annotation") {
+    Error(Nil) -> #(s, err_json("bias requires annotation"), [])
+    Ok(annotation) -> {
+      let obs_str = extract_object_field(args, "observation")
+      case json.decode(obs_str) {
+        Error(_) -> #(s, err_json("bias requires observation"), [])
+        Ok(obs_obj) -> {
+          case
+            json.get_string(obs_obj, "ref"),
+            json.get_string(obs_obj, "payload")
+          {
+            Ok(obs_ref), Ok(obs_payload) ->
+              build_bias(s, work_dir, annotation, obs_ref, obs_payload, args)
+            _, _ -> #(
+              s,
+              err_json("observation requires ref and payload"),
+              [],
+            )
           }
-          let obs_ref = session.ObsRef(sha: obs_sha)
-          let act_shas = result.unwrap(json.get_list(args, "acts"), [])
-          let acts = shas_to_frags(s, list.map(act_shas, session.ActRef))
-          let #(s2, ref) = session.decide(s, obs_ref, rule, acts)
-          let sha = session.ref_sha(ref)
-          let frags = session.fragments_for_ref(s2, ref)
-          let frag = list.first(frags) |> result.unwrap(dummy_shard())
-          #(s2, "{\"dec_sha\":\"" <> sha <> "\"}", Some(frag))
         }
       }
     }
-    "observe" -> {
-      case json.get_string(args, "ref"), json.get_string(args, "data") {
-        Ok(ref), Ok(data) -> {
-          let dec_shas = result.unwrap(json.get_list(args, "decisions"), [])
-          let decisions = shas_to_frags(s, list.map(dec_shas, session.DecRef))
-          let #(s2, obs_ref) = session.observe(s, ref, data, decisions)
-          let sha = session.ref_sha(obs_ref)
-          let frags = session.fragments_for_ref(s2, obs_ref)
-          let frag = list.first(frags) |> result.unwrap(dummy_shard())
-          #(s2, "{\"obs_sha\":\"" <> sha <> "\"}", Some(frag))
+  }
+}
+
+/// Build bias ADO bottom-up: act first, then decide wrapping acts,
+/// then observe wrapping decisions. Collect all fragments.
+/// For @exec actions, run the command and include output in response.
+fn build_bias(
+  s: session.Session,
+  work_dir: String,
+  annotation: String,
+  obs_ref_str: String,
+  obs_payload: String,
+  args: dynamic.Dynamic,
+) -> #(session.Session, String, List(fragmentation.Fragment)) {
+  let has_decision = has_object_field(args, "decision")
+  let has_action = has_object_field(args, "action")
+
+  // Cascading constraint: action requires decision
+  case has_action && !has_decision {
+    True -> #(s, err_json("action requires decision"), [])
+    False -> {
+      // Build bottom-up: act → decide → observe
+      let #(s2, act_frags, act_shas, exec_output) = case has_action {
+        False -> #(s, [], [], None)
+        True -> {
+          let act_str = extract_object_field(args, "action")
+          case json.decode(act_str) {
+            Error(_) -> #(s, [], [], None)
+            Ok(act_obj) -> {
+              let act_annotation =
+                result.unwrap(json.get_string(act_obj, "annotation"), annotation)
+              let act_payload =
+                result.unwrap(json.get_string(act_obj, "payload"), "")
+              // @exec: run the command, record output
+              let exec_out = case act_annotation {
+                "@exec" -> Some(exec_ffi(work_dir, act_payload))
+                _ -> None
+              }
+              let #(s_a, act_ref) =
+                session.act(s, act_annotation, act_payload)
+              let sha = session.ref_sha(act_ref)
+              let frags = session.fragments_for_ref(s_a, act_ref)
+              #(s_a, frags, [sha], exec_out)
+            }
+          }
         }
-        _, _ -> #(s, err_json("observe requires ref and data"), None)
       }
+
+      let #(s3, dec_frags, dec_shas) = case has_decision {
+        False -> #(s2, [], [])
+        True -> {
+          let dec_str = extract_object_field(args, "decision")
+          case json.decode(dec_str) {
+            Error(_) -> #(s2, [], [])
+            Ok(dec_obj) -> {
+              let dec_annotation =
+                result.unwrap(
+                  json.get_string(dec_obj, "annotation"),
+                  annotation,
+                )
+              let dec_payload =
+                result.unwrap(json.get_string(dec_obj, "payload"), "")
+              let obs_sha_ref = session.ObsRef(sha: session.head(s2))
+              let #(s_d, dec_ref) =
+                session.decide(
+                  s2,
+                  dec_annotation,
+                  obs_sha_ref,
+                  dec_payload,
+                  act_frags,
+                )
+              let sha = session.ref_sha(dec_ref)
+              let frags = session.fragments_for_ref(s_d, dec_ref)
+              #(s_d, frags, [sha])
+            }
+          }
+        }
+      }
+
+      // Always build observation
+      let #(s4, obs_ref) =
+        session.observe(s3, annotation, obs_ref_str, obs_payload, dec_frags)
+      let obs_sha = session.ref_sha(obs_ref)
+      let obs_frags = session.fragments_for_ref(s4, obs_ref)
+
+      // Collect all fragments (act + decide + observe)
+      let all_frags = list.flatten([act_frags, dec_frags, obs_frags])
+
+      // Build response JSON with all SHAs + exec output if present
+      let response =
+        build_bias_response(obs_sha, dec_shas, act_shas, exec_output)
+      #(s4, response, all_frags)
     }
-    _ -> #(s, err_json("unknown ado tool: " <> name), None)
+  }
+}
+
+fn build_bias_response(
+  obs_sha: String,
+  dec_shas: List(String),
+  act_shas: List(String),
+  exec_output: Option(String),
+) -> String {
+  let base = "{\"obs_sha\":\"" <> obs_sha <> "\""
+  let with_dec = case dec_shas {
+    [sha, ..] -> base <> ",\"dec_sha\":\"" <> sha <> "\""
+    [] -> base
+  }
+  let with_act = case act_shas {
+    [sha, ..] -> with_dec <> ",\"act_sha\":\"" <> sha <> "\""
+    [] -> with_dec
+  }
+  let with_exec = case exec_output {
+    Some(out) -> with_act <> ",\"exec_output\":" <> json_string(out)
+    None -> with_act
+  }
+  with_exec <> "}"
+}
+
+/// Extract a nested object field as a raw JSON string for re-parsing.
+fn extract_object_field(obj: dynamic.Dynamic, field: String) -> String {
+  let encoded = json.encode(obj)
+  extract_object_from_json(encoded, field)
+}
+
+/// Check if a nested object field exists (non-empty).
+fn has_object_field(obj: dynamic.Dynamic, field: String) -> Bool {
+  let encoded = json.encode(obj)
+  let val = extract_object_from_json(encoded, field)
+  val != "{}" && val != ""
+}
+
+/// Extract a nested object from a JSON string by field name.
+fn extract_object_from_json(json_str: String, field: String) -> String {
+  let needle = "\"" <> field <> "\":"
+  case string.split_once(json_str, needle) {
+    Error(Nil) -> "{}"
+    Ok(#(_, rest)) -> extract_json_value(string.trim_start(rest))
   }
 }
 
@@ -579,7 +674,7 @@ fn call_ado(
 // @read annotation
 // ---------------------------------------------------------------------------
 
-/// When the agent reads a file through gall, record it as a @read Fragment.
+/// When the agent reads a file through cairn, record it as a @read Fragment.
 /// Visibility is derived from path prefix:
 ///   visibility/private/  → :private
 ///   visibility/protected/ → :protected
@@ -588,9 +683,9 @@ fn call_ado(
 fn record_read(
   state: State,
   path: String,
-) -> #(State, Option(fragmentation.Fragment)) {
+) -> #(State, List(fragmentation.Fragment)) {
   case state.sess {
-    Idle -> #(state, None)
+    Idle -> #(state, [])
     Active(session: s, ..) as active -> {
       let visibility = path_visibility(path)
       let ts = int.to_string(now())
@@ -600,7 +695,7 @@ fn record_read(
       let w =
         fragmentation.witnessed(
           fragmentation.Author(author),
-          fragmentation.Committer("gall"),
+          fragmentation.Committer("cairn"),
           fragmentation.Timestamp(ts),
           fragmentation.Message("@read"),
         )
@@ -613,47 +708,11 @@ fn record_read(
       // Use the updated session so HEAD advances on reads.
       // The @read fragment is independently written to store by the caller.
       let next_sess = Active(..active, session: s2)
-      #(State(..state, sess: next_sess), Some(frag))
+      #(State(..state, sess: next_sess), [frag])
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// @exec annotation
-// ---------------------------------------------------------------------------
-
-/// When the agent runs a shell command through gall, record it as an @exec
-/// Fragment. The fragment data carries the command and a hash of the output
-/// (not the full output, which could be huge).
-fn record_exec(
-  state: State,
-  command: String,
-  output: String,
-) -> #(State, Option(fragmentation.Fragment)) {
-  case state.sess {
-    Idle -> #(state, None)
-    Active(session: s, ..) as active -> {
-      let ts = int.to_string(now())
-      let author = case session.config(s) {
-        session.SessionConfig(author: a, ..) -> a
-      }
-      let fragmentation.Sha(self: output_hash) = fragmentation.hash(output)
-      let w =
-        fragmentation.witnessed(
-          fragmentation.Author(author),
-          fragmentation.Committer("gall"),
-          fragmentation.Timestamp(ts),
-          fragmentation.Message("@exec"),
-        )
-      let data = "command: " <> command <> "\noutput_sha: " <> output_hash
-      let r = fragmentation.ref(fragmentation.hash(ts <> data), "exec")
-      let frag = fragmentation.shard(r, w, data)
-      let #(s2, _) = session.act(s, "@exec", "command: " <> command)
-      let next_sess = Active(..active, session: s2)
-      #(State(..state, sess: next_sess), Some(frag))
-    }
-  }
-}
 
 fn path_visibility(path: String) -> String {
   case string.starts_with(path, "visibility/private/") {
@@ -673,7 +732,7 @@ fn path_visibility(path: String) -> String {
 fn handle_resources_list(
   state: State,
   id: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let raw_tags = list_gestalt_sessions_ffi(state.work_dir)
   let tags = case raw_tags {
     "" -> []
@@ -683,10 +742,10 @@ fn handle_resources_list(
   let resource_items =
     list.map(tags, fn(tag) {
       let trimmed = string.trim(tag)
-      // tag = "gall/main/mara/1737000000" → uri = "gall://main/mara/1737000000"
-      let uri = case string.split_once(trimmed, "gall/") {
-        Ok(#("", rest)) -> "gall://" <> rest
-        _ -> "gall://" <> trimmed
+      // tag = "cairn/main/mara/1737000000" → uri = "cairn://main/mara/1737000000"
+      let uri = case string.split_once(trimmed, "cairn/") {
+        Ok(#("", rest)) -> "cairn://" <> rest
+        _ -> "cairn://" <> trimmed
       }
       "{\"uri\":\""
       <> json_escape(uri)
@@ -697,20 +756,20 @@ fn handle_resources_list(
 
   let items_json = "[" <> string.join(resource_items, ",") <> "]"
   let response = make_response(id, "{\"resources\":" <> items_json <> "}")
-  #(state, Some(response), None)
+  #(state, Some(response), [])
 }
 
 fn handle_resources_read(
   state: State,
   id: String,
   json: String,
-) -> #(State, Option(String), Option(fragmentation.Fragment)) {
+) -> #(State, Option(String), List(fragmentation.Fragment)) {
   let uri = extract_nested(json, "params", "uri")
-  let prefix = "gall://"
+  let prefix = "cairn://"
   case string.starts_with(uri, prefix) {
     True -> {
       let rest = string.drop_start(uri, string.length(prefix))
-      let tag = "gall/" <> rest
+      let tag = "cairn/" <> rest
       let content = read_gestalt_session_ffi(state.work_dir, tag)
       let contents =
         "[{\"uri\":\""
@@ -719,21 +778,21 @@ fn handle_resources_read(
         <> json_string(content)
         <> "}]"
       let response = make_response(id, "{\"contents\":" <> contents <> "}")
-      #(state, Some(response), None)
+      #(state, Some(response), [])
     }
     False -> #(
       state,
       Some(make_error(id, -32_602, "unknown resource: " <> uri)),
-      None,
+      [],
     )
   }
 }
 
 fn resource_templates_json() -> String {
   "{\"resourceTemplates\":["
-  <> "{\"uriTemplate\":\"gall://{branch}/{actor}/{ts}\","
+  <> "{\"uriTemplate\":\"cairn://{branch}/{actor}/{ts}\","
   <> "\"name\":\"Session\","
-  <> "\"description\":\"Witnessed Fragment record. gall://<branch>/<actor>/<ts>\","
+  <> "\"description\":\"Witnessed Fragment record. cairn://<branch>/<actor>/<ts>\","
   <> "\"mimeType\":\"text/plain\"}"
   <> "]}"
 }
@@ -753,17 +812,6 @@ fn shas_to_frags(
   list.flat_map(refs, session.fragments_for_ref(s, _))
 }
 
-fn dummy_shard() -> fragmentation.Fragment {
-  let r = fragmentation.ref(fragmentation.hash("dummy"), "dummy")
-  let w =
-    fragmentation.witnessed(
-      fragmentation.Author("gall"),
-      fragmentation.Committer("gall"),
-      fragmentation.Timestamp("0"),
-      fragmentation.Message("dummy"),
-    )
-  fragmentation.shard(r, w, "dummy")
-}
 
 fn err_json(msg: String) -> String {
   "{\"error\":\"" <> json_escape(msg) <> "\"}"
@@ -920,7 +968,7 @@ fn extract_primitive(s: String) -> String {
   }
 }
 // ---------------------------------------------------------------------------
-// Tool definitions — imported from gall/tools
+// Tool definitions — imported from cairn/tools
 // ---------------------------------------------------------------------------
 // All tool schemas are defined in tools.gleam.
 // daemon uses tools.daemon_tools_json() for the tools/list response.
