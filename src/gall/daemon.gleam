@@ -72,6 +72,9 @@ fn git_blame_ffi(dir: String, path: String) -> String
 @external(erlang, "gall_ffi", "git_show_file")
 fn git_show_file_ffi(dir: String, ref: String, path: String) -> String
 
+@external(erlang, "gall_ffi", "exec")
+fn exec_ffi(dir: String, command: String) -> String
+
 @external(erlang, "gall_ffi", "list_gestalt_sessions")
 fn list_gestalt_sessions_ffi(gall_dir: String) -> String
 
@@ -383,6 +386,29 @@ fn handle_tool_call(
           }
         }
 
+        // Exec — shell command execution, witnessed as @exec
+        "exec" -> {
+          case json.get_string(args, "command") {
+            Error(_) -> #(
+              state,
+              Some(make_response(
+                id,
+                content_text(err_json("exec requires command")),
+              )),
+              None,
+            )
+            Ok(command) -> {
+              let out = exec_ffi(state.work_dir, command)
+              let #(next_state, exec_frag) = record_exec(state, command, out)
+              #(
+                next_state,
+                Some(make_response(id, content_text(json_string(out)))),
+                exec_frag,
+              )
+            }
+          }
+        }
+
         _ -> #(
           state,
           Some(make_response(
@@ -586,6 +612,43 @@ fn record_read(
       let #(s2, _) = session.act(s, "@read", "file: " <> path)
       // Use the updated session so HEAD advances on reads.
       // The @read fragment is independently written to store by the caller.
+      let next_sess = Active(..active, session: s2)
+      #(State(..state, sess: next_sess), Some(frag))
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// @exec annotation
+// ---------------------------------------------------------------------------
+
+/// When the agent runs a shell command through gall, record it as an @exec
+/// Fragment. The fragment data carries the command and a hash of the output
+/// (not the full output, which could be huge).
+fn record_exec(
+  state: State,
+  command: String,
+  output: String,
+) -> #(State, Option(fragmentation.Fragment)) {
+  case state.sess {
+    Idle -> #(state, None)
+    Active(session: s, ..) as active -> {
+      let ts = int.to_string(now())
+      let author = case session.config(s) {
+        session.SessionConfig(author: a, ..) -> a
+      }
+      let fragmentation.Sha(self: output_hash) = fragmentation.hash(output)
+      let w =
+        fragmentation.witnessed(
+          fragmentation.Author(author),
+          fragmentation.Committer("gall"),
+          fragmentation.Timestamp(ts),
+          fragmentation.Message("@exec"),
+        )
+      let data = "command: " <> command <> "\noutput_sha: " <> output_hash
+      let r = fragmentation.ref(fragmentation.hash(ts <> data), "exec")
+      let frag = fragmentation.shard(r, w, data)
+      let #(s2, _) = session.act(s, "@exec", "command: " <> command)
       let next_sess = Active(..active, session: s2)
       #(State(..state, sess: next_sess), Some(frag))
     }

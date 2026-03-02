@@ -27,7 +27,9 @@
     git_show_file/3,
     %% Gestalt resources
     list_gestalt_sessions/1,
-    read_gestalt_session/2
+    read_gestalt_session/2,
+    %% Shell exec
+    exec/2
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -471,3 +473,12 @@ send_patch(RepoDir, Remote) ->
                    ++ " push " ++ RemoteStr ++ " HEAD 2>&1")
     end,
     ok.
+
+%% ---------------------------------------------------------------------------
+%% Shell exec
+%% ---------------------------------------------------------------------------
+
+%% Execute a shell command in Dir, capturing stdout+stderr.
+exec(Dir, Command) ->
+    Cmd = "cd " ++ binary_to_list(Dir) ++ " && " ++ binary_to_list(Command) ++ " 2>&1",
+    unicode:characters_to_binary(os:cmd(Cmd)).
