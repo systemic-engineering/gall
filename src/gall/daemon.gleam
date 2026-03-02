@@ -14,7 +14,8 @@
 /// from the file path. Reads are witnessed, not just writes.
 ///
 /// Storage:
-///   PWD           — project working directory (work_dir for all operations)
+///   GALL_WORKTREE — project working directory (overrides PWD; set by gall spawn)
+///   GALL_BRANCH   — branch name (overrides git rev-parse; set by gall spawn)
 ///   GALL_ALEX_KEY — path to alex's signing key (optional)
 ///
 /// .gall/ lives inside the project. No nested git repo.
@@ -115,11 +116,13 @@ pub type SessionState {
   )
 }
 
-/// Daemon-level state. work_dir is set at startup and never changes.
+/// Daemon-level state. work_dir and branch are set at startup and never change.
 /// gall_dir = work_dir <> "/.gall" — derived, not stored separately.
+/// branch = GALL_BRANCH env (if set) else git_current_branch — already normalized.
 pub type State {
   State(
     work_dir: String,
+    branch: String,
     alex_key: String,
     sess: SessionState,
   )
@@ -130,11 +133,18 @@ pub type State {
 // ---------------------------------------------------------------------------
 
 pub fn main() -> Nil {
-  let work_dir = result.unwrap(get_env("PWD"), ".")
+  // GALL_WORKTREE overrides PWD — set when gall spawns an agent into a worktree.
+  let work_dir =
+    result.unwrap(get_env("GALL_WORKTREE"), result.unwrap(get_env("PWD"), "."))
+  // GALL_BRANCH overrides git rev-parse — reliable in detached-worktree contexts.
+  let branch = case get_env("GALL_BRANCH") {
+    Ok(b) if b != "" -> normalize_branch(b)
+    _ -> normalize_branch(git_current_branch(work_dir))
+  }
   let alex_key = result.unwrap(get_env("GALL_ALEX_KEY"), "")
   let gall_dir = work_dir <> "/.gall"
   let _ = simplifile.create_directory_all(gall_dir)
-  let state = State(work_dir:, alex_key:, sess: Idle)
+  let state = State(work_dir:, branch:, alex_key:, sess: Idle)
   loop(state)
 }
 
@@ -180,7 +190,7 @@ fn handle(
   json: String,
 ) -> #(State, Option(String), Option(fragmentation.Fragment)) {
   let method = extract_field(json, "method")
-  let id = extract_field(json, "id")
+  let id = extract_raw_field(json, "id")
 
   case method {
     "initialize" -> handle_initialize(state, id, json)
@@ -224,10 +234,9 @@ fn handle_initialize(
   let session_config = session.SessionConfig(author: author, name: "gall-session")
   let s = session.new(session_config)
   let sid = session_id()
-  let branch = normalize_branch(git_current_branch(state.work_dir))
   let session_rel =
-    "actors/" <> nickname <> "/worktrees/" <> branch <> "/" <> sid
-  let tag_name = "gall/" <> branch <> "/" <> nickname <> "/" <> sid
+    "actors/" <> nickname <> "/worktrees/" <> state.branch <> "/" <> sid
+  let tag_name = "gall/" <> state.branch <> "/" <> nickname <> "/" <> sid
   let base = state.work_dir <> "/.gall/" <> session_rel
   let store_dir = base <> "/store"
   let _ = simplifile.create_directory_all(store_dir)
@@ -494,7 +503,8 @@ fn call_ado(
       case json.get_string(args, "annotation") {
         Error(_) -> #(s, err_json("act requires annotation"), None)
         Ok(annotation) -> {
-          let #(s2, ref) = session.act(s, annotation)
+          let data = result.unwrap(json.get_string(args, "data"), "")
+          let #(s2, ref) = session.act(s, annotation, data)
           let sha = session.ref_sha(ref)
           let frags = session.fragments_for_ref(s2, ref)
           let frag = list.first(frags) |> result.unwrap(dummy_shard())
@@ -573,7 +583,7 @@ fn record_read(
       let frag = fragmentation.shard(r, w, data)
 
       // Update HEAD in session (read advances it like any other fragment)
-      let #(s2, _) = session.act(s, "@read " <> path)
+      let #(s2, _) = session.act(s, "@read", "file: " <> path)
       // Discard the act ref; we emit our own fragment built above
       // Actually: we need to get the frag into the session store so fragments_for_ref
       // works. For simplicity, use act() result and discard — the @read frag is
@@ -746,6 +756,16 @@ fn extract_field(json: String, field: String) -> String {
   }
 }
 
+/// Extract a raw JSON value (number, string, object, etc.) for a field.
+/// Used for "id" which can be a number or string in JSON-RPC.
+fn extract_raw_field(json: String, field: String) -> String {
+  let needle = "\"" <> field <> "\":"
+  case string.split_once(json, needle) {
+    Error(Nil) -> "null"
+    Ok(#(_, rest)) -> extract_json_value(string.trim_start(rest))
+  }
+}
+
 fn extract_nested(json: String, parent: String, child: String) -> String {
   let parent_needle = "\"" <> parent <> "\":"
   case string.split_once(json, parent_needle) {
@@ -900,7 +920,9 @@ fn act_tool() -> String {
   <> "\"inputSchema\":{\"type\":\"object\","
   <> "\"properties\":{"
   <> "\"annotation\":{\"type\":\"string\","
-  <> "\"description\":\"What you did.\"}},"
+  <> "\"description\":\"Signal kind + summary. What drain filters on. e.g. '@work uphill_late'\"},"
+  <> "\"data\":{\"type\":\"string\","
+  <> "\"description\":\"Structured payload. e.g. 'state:uphill_late\\nid:42\\nscope:src/signal.gleam'\"}},"
   <> "\"required\":[\"annotation\"]}}"
 }
 

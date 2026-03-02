@@ -9,7 +9,7 @@
     accept_client/1,
     set_active/1,
     send_socket/2,
-    spawn_claude/2,
+    spawn_claude/3,
     receive_event/2,
     git_current_branch/1,
     git_commit_session/7,
@@ -44,10 +44,10 @@ session_id() ->
 %% Environment
 %% ---------------------------------------------------------------------------
 
-%% Read an environment variable. Returns {ok, Value} | error.
+%% Read an environment variable. Returns {ok, Value} | {error, nil}.
 get_env(Name) ->
     case os:getenv(binary_to_list(Name)) of
-        false -> error;
+        false -> {error, nil};
         Val -> {ok, unicode:characters_to_binary(Val)}
     end.
 
@@ -124,15 +124,22 @@ send_socket(Sock, Data) ->
 %% ---------------------------------------------------------------------------
 
 %% Spawn claude as an Erlang port.
-%% Exe: path to claude binary.
-%% Args: list of argument binaries or strings.
+%% Exe:   path to claude binary.
+%% Args:  list of argument binaries or strings.
+%% Extra: list of {Key, Value} env var pairs to inject into the child process.
+%%        Injected via os:putenv — the port inherits the full current environment
+%%        plus these additions. Thread-safe for single-session runners.
 %% Returns port().
 %%
 %% Claude's stdout is delivered as {Port, {data, Chunk}} messages.
 %% Exit is delivered as {Port, {exit_status, Code}}.
-spawn_claude(Exe, Args) ->
+spawn_claude(Exe, Args, Extra) ->
     ExeStr = binary_to_list(Exe),
     ArgsStr = [binary_to_list(A) || A <- Args],
+    lists:foreach(
+        fun({K, V}) -> os:putenv(binary_to_list(K), binary_to_list(V)) end,
+        Extra
+    ),
     open_port(
         {spawn_executable, ExeStr},
         [
@@ -364,11 +371,11 @@ write_config_tag(RepoDir, Contents) ->
 %% ---------------------------------------------------------------------------
 
 %% Read one line from stdin (blocking). Strips trailing newline.
-%% Returns {ok, Binary} | eof.
+%% Returns {ok, Binary} | {error, nil}.
 read_line() ->
     case io:get_line("") of
-        eof            -> eof;
-        {error, _}     -> eof;
+        eof            -> {error, nil};
+        {error, _}     -> {error, nil};
         Line           ->
             Trimmed = string:trim(Line, trailing, "\n"),
             {ok, unicode:characters_to_binary(Trimmed)}

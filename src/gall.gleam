@@ -67,7 +67,11 @@ fn set_active(sock: McpSocket) -> Nil
 fn send_socket(sock: McpSocket, data: String) -> Nil
 
 @external(erlang, "gall_ffi", "spawn_claude")
-fn spawn_claude(exe: String, args: List(String)) -> ClaudePort
+fn spawn_claude(
+  exe: String,
+  args: List(String),
+  env: List(#(String, String)),
+) -> ClaudePort
 
 @external(erlang, "gall_ffi", "receive_event")
 fn receive_event(port: ClaudePort, sock: McpSocket) -> Event
@@ -157,14 +161,15 @@ pub fn run(config: RunConfig) -> Nil {
   // Write MCP config for claude
   write_mcp_config(mcp_config_path, sock_path)
 
-  // Spawn claude — it connects back to our socket
+  // Spawn claude — it connects back to our socket.
+  // GALL_WORKTREE and GALL_BRANCH are set so any daemon spawned by the agent
+  // (e.g. via MCP config) knows which worktree and branch it's operating on.
   let port =
-    spawn_claude(config.claude_exe, [
-      "--mcp-config",
-      mcp_config_path,
-      "-p",
-      config.prompt,
-    ])
+    spawn_claude(
+      config.claude_exe,
+      ["--mcp-config", mcp_config_path, "-p", config.prompt],
+      [#("GALL_WORKTREE", config.work_dir), #("GALL_BRANCH", branch)],
+    )
 
   // Accept the MCP connection from claude
   let assert Ok(conn_sock) = accept_client(listen_sock)

@@ -17,9 +17,9 @@ get_string(Obj, Key) when is_map(Obj) ->
     KeyBin = unicode:characters_to_binary(Key),
     case maps:find(KeyBin, Obj) of
         {ok, Val} when is_binary(Val) -> {ok, Val};
-        _ -> error
+        _ -> {error, nil}
     end;
-get_string(_, _) -> error.
+get_string(_, _) -> {error, nil}.
 
 %% Extract a list of strings from a decoded JSON object.
 get_list(Obj, Key) when is_map(Obj) ->
@@ -28,6 +28,6 @@ get_list(Obj, Key) when is_map(Obj) ->
         {ok, List} when is_list(List) ->
             Strings = [S || S <- List, is_binary(S)],
             {ok, Strings};
-        _ -> error
+        _ -> {error, nil}
     end;
-get_list(_, _) -> error.
+get_list(_, _) -> {error, nil}.

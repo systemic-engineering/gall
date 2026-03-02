@@ -183,7 +183,8 @@ fn tool_act(
   case json.get_string(args, "annotation") {
     Error(Nil) -> #(s, err_json("act requires annotation"), None)
     Ok(annotation) -> {
-      let #(s2, ref) = session.act(s, annotation)
+      let data = result.unwrap(json.get_string(args, "data"), "")
+      let #(s2, ref) = session.act(s, annotation, data)
       let sha = session.ref_sha(ref)
       let frags = session.fragments_for_ref(s2, ref)
       let frag = list.first(frags) |> result.unwrap(dummy_shard())
@@ -465,7 +466,9 @@ fn act_tool() -> String {
   <> "\"inputSchema\":{\"type\":\"object\","
   <> "\"properties\":{"
   <> "\"annotation\":{\"type\":\"string\","
-  <> "\"description\":\"What you did.\"}},"
+  <> "\"description\":\"Signal kind + summary. What drain filters on. e.g. '@work uphill_late'\"},"
+  <> "\"data\":{\"type\":\"string\","
+  <> "\"description\":\"Structured payload. e.g. 'state:uphill_late\\nid:42\\nscope:src/signal.gleam'\"}},"
   <> "\"required\":[\"annotation\"]}}"
 }
 

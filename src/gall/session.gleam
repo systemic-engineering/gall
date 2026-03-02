@@ -83,16 +83,19 @@ pub fn last_root(session: Session) -> Option(#(fragmentation.Fragment, String)) 
 // ---------------------------------------------------------------------------
 
 /// Record an action. Call before decide — acts are passed as children.
-/// annotation: what was done (e.g. "annotate: fn:fragment is required")
+/// annotation: signal kind + summary (goes into Witnessed.message, what drain filters on)
+///   e.g. "@work uphill_late"
+/// data: structured payload (goes into Fragment.data)
+///   e.g. "state:uphill_late\nid:42\nscope:src/signal.gleam"
 /// Returns updated session and an ActRef.
-pub fn act(session: Session, annotation: String) -> #(Session, Ref) {
-  let w = witnessed(session.config, "act")
-  let content = annotation
+pub fn act(session: Session, annotation: String, data: String) -> #(Session, Ref) {
+  let w = witnessed(session.config, annotation)
+  let content = annotation <> "\n" <> data
   let frag =
     fragmentation.shard(
       fragmentation.ref(fragmentation.hash(content), "act"),
       w,
-      annotation,
+      data,
     )
   let sha = fragmentation.hash_fragment(frag)
   let updated =
