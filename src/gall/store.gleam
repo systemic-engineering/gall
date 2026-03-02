@@ -37,10 +37,7 @@ pub fn write(
 ///
 /// Returns Ok(Nil) if all fragments are present and unmodified.
 /// Returns Error("missing: <sha>") or Error("tampered: <sha>") on failure.
-pub fn verify(
-  root: fragmentation.Fragment,
-  dir: String,
-) -> Result(Nil, String) {
+pub fn verify(root: fragmentation.Fragment, dir: String) -> Result(Nil, String) {
   walk.collect(root)
   |> do_verify(dir)
 }

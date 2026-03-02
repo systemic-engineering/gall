@@ -19,6 +19,7 @@
 import fragmentation
 import gall/json
 import gall/session
+import gall/tools
 import gleam/dynamic
 import gleam/int
 import gleam/list
@@ -54,7 +55,11 @@ pub fn handle(
   case method {
     "initialize" -> handle_initialize(state, id, json)
     "notifications/initialized" -> #(state, None, None)
-    "tools/list" -> #(state, Some(make_response(id, tools_json())), None)
+    "tools/list" -> #(
+      state,
+      Some(make_response(id, tools.mcp_tools_json())),
+      None,
+    )
     "tools/call" -> handle_tool_call(state, id, json)
     _ -> #(
       state,
@@ -141,12 +146,7 @@ fn handle_tool_call(
       case json.decode(args_str) {
         Error(_) -> #(
           state,
-          Some(
-            make_response(
-              id,
-              content_text(err_json("invalid args json")),
-            ),
-          ),
+          Some(make_response(id, content_text(err_json("invalid args json")))),
           None,
         )
         Ok(args) -> {
@@ -383,7 +383,8 @@ fn do_extract_balanced(
       let rest = string.drop_start(s, 1)
       let new_acc = acc <> first
       case first {
-        c if c == open -> do_extract_balanced(rest, open, close, depth + 1, new_acc)
+        c if c == open ->
+          do_extract_balanced(rest, open, close, depth + 1, new_acc)
         c if c == close ->
           case depth - 1 {
             0 -> new_acc
@@ -415,71 +416,8 @@ fn extract_primitive(s: String) -> String {
       }
   }
 }
-
 // ---------------------------------------------------------------------------
-// Tool definitions
+// Tool definitions — imported from gall/tools
 // ---------------------------------------------------------------------------
-
-fn tools_json() -> String {
-  "{\"tools\":["
-  <> observe_tool()
-  <> ","
-  <> decide_tool()
-  <> ","
-  <> act_tool()
-  <> ","
-  <> commit_tool()
-  <> "]}"
-}
-
-fn observe_tool() -> String {
-  "{\"name\":\"observe\","
-  <> "\"description\":\"Record an observation. What you see, at what coordinate.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"ref\":{\"type\":\"string\","
-  <> "\"description\":\"Source coordinate. Use file:path, concept:name, section:heading, or task:label.\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"What you observed.\"},"
-  <> "\"decisions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"dec_sha values from prior decide calls to link as children.\"}},"
-  <> "\"required\":[\"ref\",\"data\"]}}"
-}
-
-fn decide_tool() -> String {
-  "{\"name\":\"decide\","
-  <> "\"description\":\"Record a decision derived from an observation.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"rule\":{\"type\":\"string\","
-  <> "\"description\":\"Your structural conclusion.\"},"
-  <> "\"acts\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"act_sha values from prior act calls to link as children.\"},"
-  <> "\"obs_sha\":{\"type\":\"string\","
-  <> "\"description\":\"Optional. The observation this decision belongs to. Defaults to HEAD.\"}},"
-  <> "\"required\":[\"rule\"]}}"
-}
-
-fn act_tool() -> String {
-  "{\"name\":\"act\","
-  <> "\"description\":\"Record an action taken.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"annotation\":{\"type\":\"string\","
-  <> "\"description\":\"Signal kind + summary. What drain filters on. e.g. '@work uphill_late'\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"Structured payload. e.g. 'state:uphill_late\\nid:42\\nscope:src/signal.gleam'\"}},"
-  <> "\"required\":[\"annotation\"]}}"
-}
-
-fn commit_tool() -> String {
-  "{\"name\":\"commit\","
-  <> "\"description\":\"Seal the session. Call once at the end of the task.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"name\":{\"type\":\"string\","
-  <> "\"description\":\"Session name.\"},"
-  <> "\"observations\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"obs_sha values to seal as the session root's children.\"}},"
-  <> "\"required\":[\"name\"]}}"
-}
+// All tool schemas are defined in tools.gleam.
+// MCP mode uses tools.mcp_tools_json() for the tools/list response.

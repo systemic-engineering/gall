@@ -88,7 +88,11 @@ pub fn last_root(session: Session) -> Option(#(fragmentation.Fragment, String)) 
 /// data: structured payload (goes into Fragment.data)
 ///   e.g. "state:uphill_late\nid:42\nscope:src/signal.gleam"
 /// Returns updated session and an ActRef.
-pub fn act(session: Session, annotation: String, data: String) -> #(Session, Ref) {
+pub fn act(
+  session: Session,
+  annotation: String,
+  data: String,
+) -> #(Session, Ref) {
   let w = witnessed(session.config, annotation)
   let content = annotation <> "\n" <> data
   let frag =
@@ -193,8 +197,7 @@ pub fn commit(
       observations,
     )
   let sha = fragmentation.hash_fragment(root)
-  let updated =
-    Session(..session, last_root: Some(#(root, sha)), head: sha)
+  let updated = Session(..session, last_root: Some(#(root, sha)), head: sha)
   #(updated, root, sha)
 }
 

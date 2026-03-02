@@ -253,13 +253,7 @@ fn event_loop(
         False -> {
           let frag = thought_shard(chunk, mcp_state)
           let _ = store.write(frag, store_dir)
-          event_loop(
-            mcp_state,
-            port,
-            sock,
-            store_dir,
-            [chunk, ..thought_acc],
-          )
+          event_loop(mcp_state, port, sock, store_dir, [chunk, ..thought_acc])
         }
       }
     }
@@ -285,13 +279,7 @@ fn event_loop(
             None -> Nil
             Some(response) -> send_socket(sock, response)
           }
-          event_loop(
-            next_state,
-            port,
-            sock,
-            store_dir,
-            thought_acc,
-          )
+          event_loop(next_state, port, sock, store_dir, thought_acc)
         }
       }
     }
@@ -494,11 +482,7 @@ fn write_mcp_config(path: String, sock_path: String) -> Nil {
 /// Write an exit record to base/EXIT.
 fn write_exit_record(base: String, code: Int, status: String) -> Nil {
   let content =
-    "exit_code: "
-    <> int.to_string(code)
-    <> "\nstatus: "
-    <> status
-    <> "\n"
+    "exit_code: " <> int.to_string(code) <> "\nstatus: " <> status <> "\n"
   let _ = simplifile.write(base <> "/EXIT", content)
   Nil
 }

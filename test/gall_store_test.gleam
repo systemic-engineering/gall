@@ -33,8 +33,7 @@ fn make_fragment(
     children
     |> list.map(fragmentation.hash_fragment)
     |> string.join("")
-  let r =
-    fragmentation.ref(fragmentation.hash(data <> children_sha), "obs")
+  let r = fragmentation.ref(fragmentation.hash(data <> children_sha), "obs")
   fragmentation.fragment(r, fixed_witnessed(), data, children)
 }
 

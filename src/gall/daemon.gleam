@@ -30,6 +30,7 @@ import gall/config as gall_config
 import gall/json
 import gall/session
 import gall/store
+import gall/tools
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -120,12 +121,7 @@ pub type SessionState {
 /// gall_dir = work_dir <> "/.gall" — derived, not stored separately.
 /// branch = GALL_BRANCH env (if set) else git_current_branch — already normalized.
 pub type State {
-  State(
-    work_dir: String,
-    branch: String,
-    alex_key: String,
-    sess: SessionState,
-  )
+  State(work_dir: String, branch: String, alex_key: String, sess: SessionState)
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +191,19 @@ fn handle(
   case method {
     "initialize" -> handle_initialize(state, id, json)
     "notifications/initialized" -> #(state, None, None)
-    "tools/list" -> #(state, Some(make_response(id, tools_json())), None)
+    "tools/list" -> #(
+      state,
+      Some(make_response(id, tools.daemon_tools_json())),
+      None,
+    )
     "tools/call" -> handle_tool_call(state, id, json)
     "resources/list" -> handle_resources_list(state, id)
     "resources/read" -> handle_resources_read(state, id, json)
-    "resources/templates/list" ->
-      #(state, Some(make_response(id, resource_templates_json())), None)
+    "resources/templates/list" -> #(
+      state,
+      Some(make_response(id, resource_templates_json())),
+      None,
+    )
     _ -> #(
       state,
       Some(make_error(id, -32_601, "method not found: " <> method)),
@@ -231,7 +234,8 @@ fn handle_initialize(
   let protocol_version = extract_field(json, "protocolVersion")
 
   let author = nickname <> "@systemic.engineering"
-  let session_config = session.SessionConfig(author: author, name: "gall-session")
+  let session_config =
+    session.SessionConfig(author: author, name: "gall-session")
   let s = session.new(session_config)
   let sid = session_id()
   let session_rel =
@@ -244,14 +248,7 @@ fn handle_initialize(
   let meta = meta_fragment(author, client_version, protocol_version)
 
   let new_sess =
-    Active(
-      session: s,
-      store_dir:,
-      session_rel:,
-      tag_name:,
-      nickname:,
-      sid:,
-    )
+    Active(session: s, store_dir:, session_rel:, tag_name:, nickname:, sid:)
 
   let response =
     make_response(
@@ -308,8 +305,7 @@ fn handle_tool_call(
     Ok(args) -> {
       case name {
         // ADO witnessing — require active session
-        "observe" | "decide" | "act" ->
-          call_ado_stateful(state, id, name, args)
+        "observe" | "decide" | "act" -> call_ado_stateful(state, id, name, args)
 
         // Commit — seal session, git commit, sync, reset to Idle
         "commit" -> call_commit(state, id, args)
@@ -347,7 +343,10 @@ fn handle_tool_call(
           case json.get_string(args, "path") {
             Error(_) -> #(
               state,
-              Some(make_response(id, content_text(err_json("git_blame requires path")))),
+              Some(make_response(
+                id,
+                content_text(err_json("git_blame requires path")),
+              )),
               None,
             )
             Ok(path) -> {
@@ -365,7 +364,10 @@ fn handle_tool_call(
           case json.get_string(args, "path") {
             Error(_) -> #(
               state,
-              Some(make_response(id, content_text(err_json("git_show_file requires path")))),
+              Some(make_response(
+                id,
+                content_text(err_json("git_show_file requires path")),
+              )),
               None,
             )
             Ok(path) -> {
@@ -383,7 +385,10 @@ fn handle_tool_call(
 
         _ -> #(
           state,
-          Some(make_response(id, content_text(err_json("unknown tool: " <> name)))),
+          Some(make_response(
+            id,
+            content_text(err_json("unknown tool: " <> name)),
+          )),
           None,
         )
       }
@@ -434,8 +439,7 @@ fn call_commit(
       sid:,
     ) -> {
       let obs_shas = result.unwrap(json.get_list(args, "observations"), [])
-      let observations =
-        shas_to_frags(s, list.map(obs_shas, session.ObsRef))
+      let observations = shas_to_frags(s, list.map(obs_shas, session.ObsRef))
       let #(_, root, sha) = session.commit(s, observations)
       let _ = store.write(root, sd)
 
@@ -477,11 +481,7 @@ fn call_commit(
             Some(make_response(
               id,
               content_text(
-                "{\"root_sha\":\""
-                <> sha
-                <> "\",\"tag\":\""
-                <> tag
-                <> "\"}",
+                "{\"root_sha\":\"" <> sha <> "\",\"tag\":\"" <> tag <> "\"}",
               ),
             )),
             None,
@@ -584,12 +584,9 @@ fn record_read(
 
       // Update HEAD in session (read advances it like any other fragment)
       let #(s2, _) = session.act(s, "@read", "file: " <> path)
-      // Discard the act ref; we emit our own fragment built above
-      // Actually: we need to get the frag into the session store so fragments_for_ref
-      // works. For simplicity, use act() result and discard — the @read frag is
-      // independently written to store by the caller.
-      let _ = s2
-      let next_sess = Active(..active, session: s)
+      // Use the updated session so HEAD advances on reads.
+      // The @read fragment is independently written to store by the caller.
+      let next_sess = Active(..active, session: s2)
       #(State(..state, sess: next_sess), Some(frag))
     }
   }
@@ -859,122 +856,8 @@ fn extract_primitive(s: String) -> String {
       }
   }
 }
-
 // ---------------------------------------------------------------------------
-// Tool definitions
+// Tool definitions — imported from gall/tools
 // ---------------------------------------------------------------------------
-
-fn tools_json() -> String {
-  "{\"tools\":["
-  <> observe_tool()
-  <> ","
-  <> decide_tool()
-  <> ","
-  <> act_tool()
-  <> ","
-  <> commit_tool()
-  <> ","
-  <> git_status_tool()
-  <> ","
-  <> git_diff_tool()
-  <> ","
-  <> git_log_tool()
-  <> ","
-  <> git_blame_tool()
-  <> ","
-  <> git_show_file_tool()
-  <> "]}"
-}
-
-fn observe_tool() -> String {
-  "{\"name\":\"observe\","
-  <> "\"description\":\"Record an observation. What you see, at what coordinate.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"ref\":{\"type\":\"string\","
-  <> "\"description\":\"Source coordinate. file:path, concept:name, section:heading, task:label.\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"What you observed.\"},"
-  <> "\"decisions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"dec_sha values from prior decide calls to link as children.\"}},"
-  <> "\"required\":[\"ref\",\"data\"]}}"
-}
-
-fn decide_tool() -> String {
-  "{\"name\":\"decide\","
-  <> "\"description\":\"Record a decision derived from an observation.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"rule\":{\"type\":\"string\","
-  <> "\"description\":\"Your structural conclusion.\"},"
-  <> "\"acts\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"act_sha values from prior act calls to link as children.\"},"
-  <> "\"obs_sha\":{\"type\":\"string\","
-  <> "\"description\":\"Optional. Observation this decision belongs to. Defaults to HEAD.\"}},"
-  <> "\"required\":[\"rule\"]}}"
-}
-
-fn act_tool() -> String {
-  "{\"name\":\"act\","
-  <> "\"description\":\"Record an action taken.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"annotation\":{\"type\":\"string\","
-  <> "\"description\":\"Signal kind + summary. What drain filters on. e.g. '@work uphill_late'\"},"
-  <> "\"data\":{\"type\":\"string\","
-  <> "\"description\":\"Structured payload. e.g. 'state:uphill_late\\nid:42\\nscope:src/signal.gleam'\"}},"
-  <> "\"required\":[\"annotation\"]}}"
-}
-
-fn commit_tool() -> String {
-  "{\"name\":\"commit\","
-  <> "\"description\":\"Seal the session and commit to gestalt. Call once at the end of the task.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"observations\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-  <> "\"description\":\"obs_sha values to seal as the session root's children.\"}},"
-  <> "\"required\":[]}}"
-}
-
-fn git_status_tool() -> String {
-  "{\"name\":\"git_status\","
-  <> "\"description\":\"Show working tree status of the current project.\","
-  <> "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"
-}
-
-fn git_diff_tool() -> String {
-  "{\"name\":\"git_diff\","
-  <> "\"description\":\"Show unstaged changes. Optional path filter.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"path\":{\"type\":\"string\",\"description\":\"Optional file path filter.\"}}}}"
-}
-
-fn git_log_tool() -> String {
-  "{\"name\":\"git_log\","
-  <> "\"description\":\"Show recent commit history. Optional path filter and count.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"path\":{\"type\":\"string\",\"description\":\"Optional file path filter.\"},"
-  <> "\"n\":{\"type\":\"string\",\"description\":\"Number of commits (default 20).\"}}}"
-  <> "}"
-}
-
-fn git_blame_tool() -> String {
-  "{\"name\":\"git_blame\","
-  <> "\"description\":\"Show per-line commit attribution for a file. Records a @read annotation in the current session.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"path\":{\"type\":\"string\",\"description\":\"File path relative to project root.\"}},"
-  <> "\"required\":[\"path\"]}}"
-}
-
-fn git_show_file_tool() -> String {
-  "{\"name\":\"git_show_file\","
-  <> "\"description\":\"Show file content at a given ref. Records a @read annotation in the current session.\","
-  <> "\"inputSchema\":{\"type\":\"object\","
-  <> "\"properties\":{"
-  <> "\"path\":{\"type\":\"string\",\"description\":\"File path relative to project root.\"},"
-  <> "\"ref\":{\"type\":\"string\",\"description\":\"Git ref (default HEAD).\"}},"
-  <> "\"required\":[\"path\"]}}"
-}
+// All tool schemas are defined in tools.gleam.
+// daemon uses tools.daemon_tools_json() for the tools/list response.
