@@ -11,7 +11,7 @@ pub fn tool_names_include_ado_tools_test() {
   names
   |> should.equal([
     "observe", "decide", "act", "commit", "git_status", "git_diff", "git_log",
-    "git_blame", "git_show_file",
+    "git_blame", "git_show_file", "exec",
   ])
 }
 

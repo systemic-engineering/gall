@@ -16,7 +16,10 @@
 
 /// All tool names, in the order they appear in the daemon's tools/list.
 pub fn tool_names() -> List(String) {
-  list_append(ado_tool_names(), git_tool_names())
+  list_append(
+    ado_tool_names(),
+    list_append(git_tool_names(), exec_tool_names()),
+  )
 }
 
 /// ADO witnessing tool names.
@@ -27,6 +30,11 @@ pub fn ado_tool_names() -> List(String) {
 /// Git tool names (daemon-only).
 pub fn git_tool_names() -> List(String) {
   ["git_status", "git_diff", "git_log", "git_blame", "git_show_file"]
+}
+
+/// Exec tool names (daemon-only).
+pub fn exec_tool_names() -> List(String) {
+  ["exec"]
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +61,8 @@ pub fn daemon_tools_json() -> String {
   <> git_blame_schema()
   <> ","
   <> git_show_file_schema()
+  <> ","
+  <> exec_schema()
   <> "]}"
 }
 
@@ -181,6 +191,20 @@ pub fn git_show_file_schema() -> String {
   <> "\"path\":{\"type\":\"string\",\"description\":\"File path relative to project root.\"},"
   <> "\"ref\":{\"type\":\"string\",\"description\":\"Git ref (default HEAD).\"}},"
   <> "\"required\":[\"path\"]}}"
+}
+
+// ---------------------------------------------------------------------------
+// Exec tool schema (daemon-only)
+// ---------------------------------------------------------------------------
+
+pub fn exec_schema() -> String {
+  "{\"name\":\"exec\","
+  <> "\"description\":\"Execute a shell command in the project directory. Witnessed as @exec in the session trace.\","
+  <> "\"inputSchema\":{\"type\":\"object\","
+  <> "\"properties\":{"
+  <> "\"command\":{\"type\":\"string\","
+  <> "\"description\":\"Shell command to execute.\"}},"
+  <> "\"required\":[\"command\"]}}"
 }
 
 // ---------------------------------------------------------------------------
