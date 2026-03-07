@@ -1,33 +1,22 @@
 use fragmentation::fragment::{self, Fragment};
 use fragmentation::walk;
-use std::fs;
-use std::io;
-use std::path::Path;
 
-pub fn write(frag: &Fragment, dir: &str) -> io::Result<()> {
-    fragmentation::git::write(frag, dir)
+pub fn write(frag: &Fragment, repo: &git2::Repository) -> Result<git2::Oid, git2::Error> {
+    fragmentation::git::write_tree(repo, frag)
 }
 
-pub fn verify(root: &Fragment, dir: &str) -> Result<(), String> {
+pub fn verify(root: &Fragment, repo: &git2::Repository) -> Result<(), String> {
     let frags = walk::collect(root);
     for frag in frags {
-        check_one(frag, dir)?;
+        check_one(frag, repo)?;
     }
     Ok(())
 }
 
-fn check_one(frag: &Fragment, dir: &str) -> Result<(), String> {
-    let sha = fragment::hash_fragment(frag);
-    let expected = fragment::serialize(frag);
-    let path = Path::new(dir).join(&sha);
-    match fs::read_to_string(&path) {
-        Err(_) => Err(format!("missing: {}", sha)),
-        Ok(on_disk) => {
-            if on_disk == expected {
-                Ok(())
-            } else {
-                Err(format!("tampered: {}", sha))
-            }
-        }
-    }
+fn check_one(frag: &Fragment, repo: &git2::Repository) -> Result<(), String> {
+    let oid_hex = fragment::content_oid(frag);
+    let oid = git2::Oid::from_str(&oid_hex).map_err(|e| format!("invalid oid: {}", e))?;
+    repo.find_object(oid, None)
+        .map(|_| ())
+        .map_err(|_| format!("missing: {}", oid_hex))
 }

@@ -323,10 +323,7 @@ fn session_last_root_after_commit() {
     let (root, _, sha) = s.commit("commit: test-session", &[]);
     let lr = s.last_root().unwrap();
     assert_eq!(lr.1, sha);
-    assert_eq!(
-        fragment::content_oid(lr.0),
-        fragment::content_oid(&root)
-    );
+    assert_eq!(fragment::content_oid(lr.0), fragment::content_oid(&root));
 }
 
 // ---------------------------------------------------------------------------
@@ -381,10 +378,7 @@ fn state_append_preserves_previous() {
 fn store_write_creates_object() {
     let dir = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(dir.path()).unwrap();
-    let frag = Fragment::shard(
-        FragRef::new(sha::hash("test"), "test"),
-        "test data",
-    );
+    let frag = Fragment::shard(FragRef::new(sha::hash("test"), "test"), "test data");
     let oid = store::write(&frag, &repo).unwrap();
     assert!(repo.find_object(oid, None).is_ok());
 }
@@ -422,10 +416,7 @@ fn store_verify_missing() {
 fn store_verify_deep_tree() {
     let dir = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(dir.path()).unwrap();
-    let child = Fragment::shard(
-        FragRef::new(sha::hash("child"), "act"),
-        "child data",
-    );
+    let child = Fragment::shard(FragRef::new(sha::hash("child"), "act"), "child data");
     let parent = Fragment::fractal(
         FragRef::new(sha::hash("parent"), "root"),
         "parent data",
@@ -453,10 +444,7 @@ fn store_verify_deep_tree() {
 fn store_write_commit_carries_witness() {
     let dir = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(dir.path()).unwrap();
-    let frag = Fragment::shard(
-        FragRef::new(sha::hash("commit-test"), "act"),
-        "commit data",
-    );
+    let frag = Fragment::shard(FragRef::new(sha::hash("commit-test"), "act"), "commit data");
     let w = Witnessed::new(
         Author("mara".into()),
         Committer("cairn".into()),

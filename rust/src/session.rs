@@ -63,10 +63,9 @@ impl Session {
     }
 
     pub fn act(&mut self, annotation: &str, data: &str) -> Ref {
-        let w = self.witnessed(annotation);
         let content = format!("{}\n{}", annotation, data);
-        let frag = Fragment::shard(FragRef::new(sha::hash(&content), "act"), w, data);
-        let sha = fragment::hash_fragment(&frag);
+        let frag = Fragment::shard(FragRef::new(sha::hash(&content), "act"), data);
+        let sha = fragment::content_oid(&frag);
         self.store.push((sha.clone(), frag));
         self.head = sha.clone();
         Ref::Act(sha)
@@ -74,22 +73,20 @@ impl Session {
 
     pub fn decide(
         &mut self,
-        annotation: &str,
+        _annotation: &str,
         obs_ref: &Ref,
         rule: &str,
         acts: &[Fragment],
     ) -> Ref {
         let obs_sha = obs_ref.sha();
-        let w = self.witnessed(annotation);
         let children_sha = children_sha_str(acts);
         let content = format!("{}{}{}", obs_sha, rule, children_sha);
-        let frag = Fragment::new_fragment(
+        let frag = Fragment::fractal(
             FragRef::new(sha::hash(&content), "dec"),
-            w,
             rule,
             acts.to_vec(),
         );
-        let sha = fragment::hash_fragment(&frag);
+        let sha = fragment::content_oid(&frag);
         self.store.push((sha.clone(), frag));
         self.head = sha.clone();
         Ref::Dec(sha)
@@ -97,41 +94,42 @@ impl Session {
 
     pub fn observe(
         &mut self,
-        annotation: &str,
+        _annotation: &str,
         ref_str: &str,
         data: &str,
         decisions: &[Fragment],
     ) -> Ref {
-        let w = self.witnessed(annotation);
         let children_sha = children_sha_str(decisions);
         let content = format!("{}{}{}", ref_str, data, children_sha);
-        let frag = Fragment::new_fragment(
+        let frag = Fragment::fractal(
             FragRef::new(sha::hash(&content), "obs"),
-            w,
             data,
             decisions.to_vec(),
         );
-        let sha = fragment::hash_fragment(&frag);
+        let sha = fragment::content_oid(&frag);
         self.store.push((sha.clone(), frag));
         self.head = sha.clone();
         Ref::Obs(sha)
     }
 
-    pub fn commit(&mut self, annotation: &str, observations: &[Fragment]) -> (Fragment, String) {
+    pub fn commit(
+        &mut self,
+        annotation: &str,
+        observations: &[Fragment],
+    ) -> (Fragment, Witnessed, String) {
         let name = &self.config.name;
         let w = self.witnessed(annotation);
         let children_sha = children_sha_str(observations);
         let content = format!("{}{}", name, children_sha);
-        let root = Fragment::new_fragment(
+        let root = Fragment::fractal(
             FragRef::new(sha::hash(&content), "root"),
-            w,
             name.clone(),
             observations.to_vec(),
         );
-        let sha = fragment::hash_fragment(&root);
+        let sha = fragment::content_oid(&root);
         self.last_root = Some((root.clone(), sha.clone()));
         self.head = sha.clone();
-        (root, sha)
+        (root, w, sha)
     }
 
     fn witnessed(&self, message: &str) -> Witnessed {
@@ -155,6 +153,6 @@ impl Session {
 fn children_sha_str(fragments: &[Fragment]) -> String {
     fragments
         .iter()
-        .map(fragment::hash_fragment)
+        .map(fragment::content_oid)
         .fold(String::new(), |acc, h| acc + &h)
 }
