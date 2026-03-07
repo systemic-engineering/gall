@@ -12,11 +12,19 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(_actor: Actor) -> Self {
-        todo!()
+    pub fn new(actor: Actor) -> Self {
+        State {
+            actor,
+            sessions: Vec::new(),
+        }
     }
 
-    pub fn append(&mut self, _root_sha: String, _timestamp: String) {
-        todo!()
+    pub fn append(&mut self, root_sha: String, timestamp: String) {
+        let previous = self.sessions.last().map(|s| s.root_sha.clone());
+        self.sessions.push(SessionRecord {
+            root_sha,
+            previous,
+            timestamp,
+        });
     }
 }
