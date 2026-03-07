@@ -1,3 +1,4 @@
+pub mod cairn;
 pub mod encoding;
 pub mod key;
 pub mod session;

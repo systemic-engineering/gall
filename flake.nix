@@ -21,6 +21,8 @@
             gleam
             erlang
             rebar3
+            pkgs.rustc pkgs.cargo pkgs.clippy pkgs.rustfmt
+            pkgs.pkg-config
             pkgs.git
             pkgs.openssh   # ssh-keygen for agent key derivation
             pkgs.just

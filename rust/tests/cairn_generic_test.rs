@@ -74,9 +74,7 @@ fn cairn_observe_type_in_trailers() {
 fn cairn_observe_author() {
     let (_dir, repo) = init_repo();
     let cairn: cairn::cairn::Cairn<String> = cairn::cairn::Cairn::open(repo, "mara");
-    let oid = cairn
-        .observe("data".to_string(), "test", None)
-        .unwrap();
+    let oid = cairn.observe("data".to_string(), "test", None).unwrap();
     let repo = cairn.repo();
     let commit = repo.find_commit(oid).unwrap();
     assert_eq!(commit.author().name(), Some("mara"));
@@ -86,9 +84,7 @@ fn cairn_observe_author() {
 fn cairn_observe_chain() {
     let (_dir, repo) = init_repo();
     let cairn: cairn::cairn::Cairn<String> = cairn::cairn::Cairn::open(repo, "mara");
-    let obs1 = cairn
-        .observe("first".to_string(), "test", None)
-        .unwrap();
+    let obs1 = cairn.observe("first".to_string(), "test", None).unwrap();
     let obs2 = cairn
         .observe("second".to_string(), "test", Some(obs1))
         .unwrap();
@@ -109,9 +105,7 @@ fn cairn_decide_parents_observation() {
     let obs = cairn
         .observe("pattern".to_string(), "code-review", None)
         .unwrap();
-    let dec = cairn
-        .decide(obs, "apply fix".to_string())
-        .unwrap();
+    let dec = cairn.decide(obs, "apply fix".to_string()).unwrap();
     let repo = cairn.repo();
     let commit = repo.find_commit(dec).unwrap();
     assert_eq!(commit.parent_count(), 1);
@@ -122,12 +116,8 @@ fn cairn_decide_parents_observation() {
 fn cairn_decide_content_readable() {
     let (_dir, repo) = init_repo();
     let cairn: cairn::cairn::Cairn<String> = cairn::cairn::Cairn::open(repo, "mara");
-    let obs = cairn
-        .observe("pattern".to_string(), "test", None)
-        .unwrap();
-    let dec = cairn
-        .decide(obs, "rationale here".to_string())
-        .unwrap();
+    let obs = cairn.observe("pattern".to_string(), "test", None).unwrap();
+    let dec = cairn.decide(obs, "rationale here".to_string()).unwrap();
     let content: String = cairn.read(dec).unwrap();
     assert_eq!(content, "rationale here");
 }
@@ -139,9 +129,7 @@ fn cairn_decide_trailers() {
     let obs = cairn
         .observe("data".to_string(), "boundary-violation", None)
         .unwrap();
-    let dec = cairn
-        .decide(obs, "rationale".to_string())
-        .unwrap();
+    let dec = cairn.decide(obs, "rationale".to_string()).unwrap();
     let repo = cairn.repo();
     let commit = repo.find_commit(dec).unwrap();
     let msg = commit.message().unwrap();
@@ -160,12 +148,8 @@ fn cairn_act_parents_decision() {
     let obs = cairn
         .observe("pattern".to_string(), "code-review", None)
         .unwrap();
-    let dec = cairn
-        .decide(obs, "fix it".to_string())
-        .unwrap();
-    let act = cairn
-        .act(dec, "patch applied".to_string())
-        .unwrap();
+    let dec = cairn.decide(obs, "fix it".to_string()).unwrap();
+    let act = cairn.act(dec, "patch applied".to_string()).unwrap();
     let repo = cairn.repo();
     let commit = repo.find_commit(act).unwrap();
     assert_eq!(commit.parent_count(), 1);
@@ -176,15 +160,9 @@ fn cairn_act_parents_decision() {
 fn cairn_act_content_readable() {
     let (_dir, repo) = init_repo();
     let cairn: cairn::cairn::Cairn<String> = cairn::cairn::Cairn::open(repo, "mara");
-    let obs = cairn
-        .observe("pattern".to_string(), "test", None)
-        .unwrap();
-    let dec = cairn
-        .decide(obs, "rationale".to_string())
-        .unwrap();
-    let act = cairn
-        .act(dec, "the action".to_string())
-        .unwrap();
+    let obs = cairn.observe("pattern".to_string(), "test", None).unwrap();
+    let dec = cairn.decide(obs, "rationale".to_string()).unwrap();
+    let act = cairn.act(dec, "the action".to_string()).unwrap();
     let content: String = cairn.read(act).unwrap();
     assert_eq!(content, "the action");
 }
@@ -196,12 +174,8 @@ fn cairn_act_trailers() {
     let obs = cairn
         .observe("data".to_string(), "boundary-violation", None)
         .unwrap();
-    let dec = cairn
-        .decide(obs, "rationale".to_string())
-        .unwrap();
-    let act = cairn
-        .act(dec, "action".to_string())
-        .unwrap();
+    let dec = cairn.decide(obs, "rationale".to_string()).unwrap();
+    let act = cairn.act(dec, "action".to_string()).unwrap();
     let repo = cairn.repo();
     let commit = repo.find_commit(act).unwrap();
     let msg = commit.message().unwrap();
@@ -221,12 +195,8 @@ fn cairn_oda_full_chain() {
     let obs = cairn
         .observe("code has no tests".to_string(), "code-review", None)
         .unwrap();
-    let dec = cairn
-        .decide(obs, "add tests first".to_string())
-        .unwrap();
-    let act = cairn
-        .act(dec, "wrote 5 test cases".to_string())
-        .unwrap();
+    let dec = cairn.decide(obs, "add tests first".to_string()).unwrap();
+    let act = cairn.act(dec, "wrote 5 test cases".to_string()).unwrap();
 
     // Verify parent chain: act → dec → obs
     let repo = cairn.repo();
@@ -252,9 +222,7 @@ fn cairn_bytes_encoding() {
     let (_dir, repo) = init_repo();
     let cairn: cairn::cairn::Cairn<Vec<u8>> = cairn::cairn::Cairn::open(repo, "mara");
     let data = vec![0xde, 0xad, 0xbe, 0xef];
-    let obs = cairn
-        .observe(data.clone(), "binary-test", None)
-        .unwrap();
+    let obs = cairn.observe(data.clone(), "binary-test", None).unwrap();
     let content: Vec<u8> = cairn.read(obs).unwrap();
     assert_eq!(content, data);
 }
@@ -266,7 +234,11 @@ fn cairn_bytes_encoding() {
 #[derive(Debug, Clone, PartialEq)]
 enum TestDialect {
     Text(String),
-    Finding { file: String, line: u32, msg: String },
+    Finding {
+        file: String,
+        line: u32,
+        msg: String,
+    },
 }
 
 impl Encode for TestDialect {
@@ -294,7 +266,9 @@ impl Decode for TestDialect {
             }
             Ok(TestDialect::Finding {
                 file: parts[0].to_string(),
-                line: parts[1].parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+                line: parts[1]
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?,
                 msg: parts[2].to_string(),
             })
         } else {
@@ -314,9 +288,7 @@ fn cairn_custom_encoding_roundtrip() {
         msg: "missing error handling".to_string(),
     };
 
-    let obs = cairn
-        .observe(finding.clone(), "code-review", None)
-        .unwrap();
+    let obs = cairn.observe(finding.clone(), "code-review", None).unwrap();
     let content: TestDialect = cairn.read(obs).unwrap();
     assert_eq!(content, finding);
 }
