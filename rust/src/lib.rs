@@ -1,3 +1,4 @@
+pub mod encoding;
 pub mod key;
 pub mod session;
 pub mod spec;
