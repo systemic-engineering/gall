@@ -2,7 +2,10 @@ use fragmentation::encoding::Encode;
 use fragmentation::fragment::{self, Fragment};
 use fragmentation::walk;
 
-pub fn write<E: Encode>(frag: &Fragment<E>, repo: &git2::Repository) -> Result<git2::Oid, git2::Error> {
+pub fn write<E: Encode>(
+    frag: &Fragment<E>,
+    repo: &git2::Repository,
+) -> Result<git2::Oid, git2::Error> {
     fragmentation::git::write_tree(repo, frag)
 }
 
